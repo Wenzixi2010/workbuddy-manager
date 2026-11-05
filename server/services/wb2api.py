@@ -266,6 +266,8 @@ def list_auth_accounts(auth_dir: Path | None = None) -> list[dict]:
                 # 账号所属版本（cn / global）。上游据此路由到不同上游，
                 # 管理端据此做视图过滤与端点分派；存量文件无 realm 字段时
                 # 按 domain 回退，domain 也为空则判 cn（行为与升级前一致）
+                # Permission identity must not change with the global routing escape hatch.
+                'identity_realm': _realm.resolve_realm(raw.get('realm') or auth.get('realm'), auth.get('domain')),
                 'realm': realm_of({'realm': raw.get('realm') or auth.get('realm'),
                                    'domain': auth.get('domain')}),
                 'domain': str(auth.get('domain') or ''),

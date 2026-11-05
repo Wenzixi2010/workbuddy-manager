@@ -52,6 +52,7 @@
 /** 图标标识。名字与 `PageSectionTabs` 里的映射表一一对应。 */
 export type SectionNavIconKey =
   | 'accounts'
+  | 'migration'
   | 'tasks'
   | 'keys'
   | 'redPackets'
@@ -84,6 +85,7 @@ export const SECTION_NAV: Record<SectionKey, readonly SectionNavItem[]> = {
   accounts: [
     {key: 'accounts', href: '/accounts', labelKey: 'nav.accounts', iconKey: 'accounts'},
     {key: 'tasks', href: '/tasks', labelKey: 'nav.tasks', iconKey: 'tasks'},
+    {key: 'migration', href: '/migration', labelKey: 'nav.migration', iconKey: 'migration'},
   ],
   keys: [
     {key: 'keys', href: '/keys', labelKey: 'nav.keys', iconKey: 'keys'},

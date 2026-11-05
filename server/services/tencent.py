@@ -507,8 +507,9 @@ def write_auth_file(account: dict, auth_dir: Path | None = None,
                 'realm': resolved,
             },
         }
-        if old_device_token:
-            payload['device_token'] = old_device_token
+        device_token = str(account.get('device_token') or old_device_token or '')
+        if device_token:
+            payload['device_token'] = device_token
 
         # 空串同样回退到旧值（`or old_proxy`，而不是只对「键缺失」生效的默认值）：
         # 登录流（account 里通常没有这个键）与**导入流**（`_uploaded_account` 恒带上

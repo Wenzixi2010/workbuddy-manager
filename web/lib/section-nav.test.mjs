@@ -51,9 +51,9 @@ const PREFIX = '/workbuddy-manager';
 check('三节', [...SECTIONS], ['accounts', 'keys', 'models']);
 
 check(
-  '每节两项（只有一项就不该叫「二级导航」）',
+  '账号节含迁移入口，其余节两项',
   SECTIONS.map((s) => SECTION_NAV[s].length),
-  [2, 2, 2],
+  [3, 2, 2],
 );
 
 check(
@@ -216,7 +216,7 @@ check(
     const found = sectionNavFromPath(i.href, '');
     return found ? found.item.href === i.href && found.section === s : false;
   })),
-  [true, true, true, true, true, true],
+  [true, true, true, true, true, true, true],
 );
 
 check(
@@ -225,8 +225,10 @@ check(
     const found = sectionNavFromPath(`${PREFIX}${i.href}`, PREFIX);
     return found ? found.item.href === i.href && found.section === s : false;
   })),
-  [true, true, true, true, true, true],
+  [true, true, true, true, true, true, true],
 );
+
+check('迁移页属于账号节', at('/migration'), ['accounts', 'migration']);
 
 if (failed > 0) {
   console.log(`\n${failed} 项失败`);

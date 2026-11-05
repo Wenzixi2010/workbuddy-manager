@@ -18,7 +18,7 @@ from .. import config, db, security, upstreamsvc
 from ..iputil import client_ip
 from ..services import (
     credits as creditsvc, dailyplan, modelcatalog, reload, renew, tasklog, taskrun,
-    tencent, wb2api,
+    accountaccess, accountimport, tencent, wb2api,
 )
 from ..services.realm import realm_of, supports_checkin
 from ..services import taskpacing
@@ -44,70 +44,11 @@ class _InvalidUploadProxy(ValueError):
 
 
 def _uploaded_account(raw: object, filename: str) -> dict:
-    """Normalize supported exported account JSON into ``write_auth_file`` input."""
-    if not isinstance(raw, dict):
-        raise ValueError('账号条目必须是对象')
-
-    account = raw.get('account') if isinstance(raw.get('account'), dict) else raw
-    auth = raw.get('auth') if isinstance(raw.get('auth'), dict) else raw
-
-    def value(*keys: str) -> object:
-        for source in (auth, account, raw):
-            for key in keys:
-                if source.get(key) not in (None, ''):
-                    return source[key]
-        return ''
-
-    uid = str(value('uid', 'user_id')).strip()
-    access_token = str(value('accessToken', 'access_token')).strip()
-    if not uid:
-        raise ValueError('缺少 uid')
-    if not access_token:
-        raise ValueError('缺少 accessToken')
-
-    absolute_expiry = value('expiresAt', 'expires_at')
-    duration_expiry = value('expiresIn', 'expires_in')
-    try:
-        if absolute_expiry not in (None, ''):
-            expires_at = int(absolute_expiry)
-        elif duration_expiry in (None, ''):
-            # Some exports only preserve opaque tokens. Zero means unknown; fabricating
-            # an expiry would make scheduling and the account page report false data.
-            expires_at = 0
-        else:
-            # Tencent's expiresIn is a duration, unlike expiresAt which is an epoch.
-            expires_at = int(time.time()) + int(duration_expiry)
-    except (TypeError, ValueError) as exc:
-        raise ValueError('expiresAt 必须是数字') from exc
-    if expires_at < 0:
-        raise ValueError('expiresAt 必须是非负数字')
-
-    return {
-        'uid': uid,
-        'access_token': access_token,
-        'refresh_token': str(value('refreshToken', 'refresh_token') or ''),
-        'expires_at': expires_at,
-        'domain': str(value('domain') or ''),
-        'realm': str(value('realm') or ''),
-        'enterprise_id': str(value('enterpriseId', 'enterprise_id') or ''),
-        'nickname': str(value('nickname', 'name') or ''),
-        'device_token': str(raw.get('device_token') or ''),
-        'proxy': str(value('proxy') or ''),
-        '_filename': filename,
-    }
+    return accountimport.normalize(raw, filename)
 
 
 def _uploaded_entries(raw: object) -> list[object]:
-    """Expand common single-account and multi-account export shapes."""
-    if isinstance(raw, dict) and isinstance(raw.get('accounts'), list):
-        entries = raw['accounts']
-    elif isinstance(raw, list):
-        entries = raw
-    else:
-        entries = [raw]
-    if not entries:
-        raise ValueError('JSON 中没有账号条目')
-    return entries
+    return accountimport.entries(raw)
 
 
 @router.get('/accounts/export')
@@ -216,15 +157,6 @@ async def upload_accounts(
                             raise _InvalidUploadProxy(str(exc)) from exc
                     filename, existed = tencent.write_auth_file(
                         account, auth_dir, allow_overwrite=overwrite)
-                    # Preserve per-account metadata that write_auth_file intentionally does not
-                    # accept from the login flow.
-                    path = auth_dir / filename
-                    saved = json.loads(path.read_text(encoding='utf-8'))
-                    if account['device_token']:
-                        saved['device_token'] = account['device_token']
-                    if account['proxy']:
-                        saved['proxy'] = account['proxy']
-                    tencent._atomic_write_json(path, saved)
                     if not existed:
                         db.record_account_added(account['uid'], auth_dir)
                     reload.request_reload_or_restart(account['uid'], upstream=_reload_target(group))
@@ -428,6 +360,43 @@ async def account_set_proxy(
     return {'ok': True, **result, 'reload_triggered': scheduled}
 
 
+@router.post('/accounts/import-json')
+async def import_json_accounts(request: Request, body: dict = Body(...),
+                               upstream_id: int | None = Query(None),
+                               user: dict = Depends(security.require_session_admin)) -> dict:
+    content = body.get('content')
+    overwrite = body.get('overwrite', False)
+    if not isinstance(content, str) or type(overwrite) is not bool:
+        raise HTTPException(400, 'content 必须是 JSON 文本，overwrite 必须是布尔值')
+    payload = content.encode('utf-8')
+    if len(payload) > _ACCOUNT_UPLOAD_MAX_BYTES:
+        raise HTTPException(413, 'JSON 不能超过 2 MB')
+    upload = UploadFile(filename='import.json', file=io.BytesIO(payload))
+    return await upload_accounts(request, [upload], upstream_id, overwrite, user)
+
+
+@router.put('/accounts/{filename}/key-access')
+async def account_key_access(filename: str, request: Request, body: dict = Body(...),
+                             upstream_id: int | None = Query(None),
+                             user: dict = Depends(security.require_admin)) -> dict:
+    ids = body.get('key_ids')
+    if not isinstance(ids, list) or len(ids) > 500 or any(type(i) is not int or i <= 0 for i in ids):
+        raise HTTPException(400, 'key_ids 必须是 Key ID 数组')
+    group = _group(upstream_id)
+    try:
+        raw = wb2api.read_account_file(filename, _require_dir(group))
+        account = _uploaded_account(raw, filename)
+    except FileNotFoundError:
+        raise HTTPException(404, '账号不存在') from None
+    except ValueError:
+        raise HTTPException(400, '账号文件格式无效') from None
+    aid = accountaccess.identity(account)
+    accountaccess.set_policy(group, aid, ids)
+    security.audit(user, 'account.key_access', aid,
+                   f'允许 Key={list(dict.fromkeys(ids))}；来源 {client_ip(request)}')
+    return {'ok': True, 'allowed_key_ids': list(dict.fromkeys(ids))}
+
+
 @router.put('/accounts/{filename}/weight')
 async def account_set_weight(
     filename: str, body: dict = Body(...),
@@ -483,6 +452,7 @@ async def list_accounts(upstream_id: int | None = Query(None),
     wb2api.merge_pool_status(accounts, status)
     # 备注随列表一次带回（issue #67）：按 uid 取，没有备注的账号给空串而不是缺字段
     # —— 前端两处视图（手机卡片 / 桌面表格）都直接读它，缺字段会多一处判空。
+    accountaccess.annotate(accounts, group)
     notes = db.account_notes()
     added_times = db.account_added_times(base_dir) if base_dir else {}
     # 今日签到状态随列表一次带回（和备注同一个理由：两处视图都直接读它）。
@@ -2462,6 +2432,14 @@ async def account_move(
             break
     if src_path is None:
         raise HTTPException(status_code=404, detail='账号文件不存在')
+
+    # A directory move must not turn a dedicated account into a public one.
+    listed = wb2api.list_auth_accounts(src_dir)
+    account = next((a for a in listed if a.get('file') == src_path.name), None)
+    if account:
+        aid = accountaccess.identity(account)
+        if accountaccess.policies(src).get(aid) or accountaccess.reservations(src).get(aid):
+            raise HTTPException(409, '该账号仍有 Key 使用权限或独占绑定；请先解除限制，再移动分组')
 
     dst_path = dst_dir / src_path.name
     if dst_path.exists():

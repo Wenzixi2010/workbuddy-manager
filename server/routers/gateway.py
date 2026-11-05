@@ -11,10 +11,11 @@ import threading
 import time
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import HTTPException, APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import config, db, iputil, keysvc, upstreamsvc
+from ..services import accountaccess
 from ..services import modelcatalog, modelmap, proxyroutes
 from ..config import _env_int
 from ..routers.security import get_config as get_security_config
@@ -823,6 +824,18 @@ def _upstream_headers(upstream: dict | None = None) -> dict:
     return headers
 
 
+async def _scoped_upstream_headers(upstream: dict, key: dict | None) -> dict:
+    headers = _upstream_headers(upstream)
+    headers.update(await accountaccess.forwarding_headers(key, upstream))
+    return headers
+
+
+def _scoped_path(path: str, headers: dict) -> str:
+    if accountaccess.HEADER not in headers:
+        return path
+    return path.replace('/chat/completions', '/scoped/chat/completions').replace('/v1/models', '/v1/scoped/models')
+
+
 def _upstream_hint(upstream: dict | None) -> str:
     """502/503 时补一句「本次打的是哪个上游、这一跳会不会走出口代理」。
 
@@ -992,18 +1005,25 @@ async def list_models(request: Request):
         key, ip=ip, model='', mapped='', ua=request.headers.get('user-agent'))
     if upstream_err:
         return upstream_err
+    try:
+        headers = await _scoped_upstream_headers(upstream, key)
+    except HTTPException as exc:
+        return _oai_error(str(exc.detail), exc.status_code, 'api_error', 'account_scope_unavailable')
     started = time.time()
     try:
         async with config.http_client(30, connect=3) as client:
-            resp = await client.get(f'{upstream["base_url"]}/v1/models',
-                                    headers=_upstream_headers(upstream))
+            resp = await client.get(upstream['base_url'] + _scoped_path('/v1/models', headers),
+                                    headers=headers)
         latency = int((time.time() - started) * 1000)
         _record(key, ip, '', '', resp.status_code, 0, 0, latency, request.headers.get('user-agent'), None, False)
         payload = _scope_models(resp.json(), key)
         # 目录收缩（issue #239）：上游模型表可能仍列着腾讯已经下架的 id，
         # 客户端选中后才 503。模型中心直连腾讯的目录是当前可用的权威清单，
         # 取得到且来源是腾讯时按它裁一次；取不到就原样透传。
-        payload = await _drop_models_outside_catalog(payload, key)
+        # The general catalog probes the default pool. Scoped listings already
+        # use permitted accounts upstream; never probe another account here.
+        if accountaccess.HEADER not in headers:
+            payload = await _drop_models_outside_catalog(payload, key)
         # 能力字段兜底（issue #211）：随包上游的版本可能比面板旧 —— 补丁只在上游
         # 侧时，下游经面板拿到的清单仍缺字段，客户端会整条跳过模型。
         payload = _listing_compat_models(payload)
@@ -1333,13 +1353,19 @@ async def _chat(request: Request, upstream_path: str):
                                            mapped=mapped or '', ua=ua)
     if upstream_err:
         return upstream_err
-    url = f'{upstream["base_url"]}{upstream_path}'
+    try:
+        headers = await _scoped_upstream_headers(upstream, key)
+    except HTTPException as exc:
+        _record(key, ip, requested_model or '', mapped or '', exc.status_code, 0, 0, 0, ua,
+                str(exc.detail), False, account_expected=False)
+        return _oai_error(str(exc.detail), exc.status_code, 'api_error', 'account_scope_unavailable')
+    url = f'{upstream["base_url"]}{_scoped_path(upstream_path, headers)}'
     started = time.time()
 
     if not stream:
         try:
             async with config.http_client(config.UPSTREAM_TIMEOUT, connect=5) as client:
-                resp = await client.post(url, json=body, headers=_upstream_headers(upstream))
+                resp = await client.post(url, json=body, headers=headers)
             latency = int((time.time() - started) * 1000)
             usage = {}
             try:
@@ -1380,7 +1406,7 @@ async def _chat(request: Request, upstream_path: str):
     # 流式转发
     client = config.http_client(config.UPSTREAM_TIMEOUT, connect=5)
     try:
-        req = client.build_request('POST', url, json=body, headers=_upstream_headers(upstream))
+        req = client.build_request('POST', url, json=body, headers=headers)
         resp = await client.send(req, stream=True)
     except Exception as exc:  # noqa: BLE001
         await client.aclose()

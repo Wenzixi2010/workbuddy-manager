@@ -11,6 +11,9 @@ export interface RefreshRisk {
 }
 
 export interface Account {
+  account_id?: string;
+  allowed_key_ids?: number[];
+  reserved_by_key_ids?: number[];
   /** 本面板记录的添加时间（Unix 秒）；旧账号/直接拷贝的文件可能未知。 */
   added_at?: number | null;
   refresh_risk?: RefreshRisk | null;
@@ -439,6 +442,8 @@ export interface UpstreamEndpoint {
 }
 
 export interface ApiKey {
+  account_ids?: string[];
+  bind_mode?: 'whitelist' | 'exclusive';
   id: number;
   name: string;
   prefix: string;
@@ -481,7 +486,7 @@ export interface ApiKey {
   packet_id: number | null;
   created_at: number;
   last_used_at: number | null;
-  /** 仅在创建时返回一次 */
+  /** 创建与管理员主动查看时返回，列表不包含明文 */
   key?: string;
 }
 
@@ -1850,4 +1855,27 @@ export interface PricingInfo {
   stale_after_days: number;
   aliases: Record<string, string>;
   priced_models: string[];
+}
+
+export interface AccountImportResult {
+  ok: boolean;
+  uploaded: Array<{file: string; uid: string; updated: boolean}>;
+  added: Array<{file: string; uid: string; updated: boolean}>;
+  overwritten: Array<{file: string; uid: string; updated: boolean}>;
+  rejected: Array<{file: string; uid?: string; message: string}>;
+  failed: Array<{file: string; message: string}>;
+}
+
+export interface LegacyMigrationResult {
+  preview: boolean;
+  counts: {accounts: number; valid_accounts: number; new_accounts: number; keys: number;
+    valid_keys: number; new_keys: number; logs: number};
+  warnings: string[];
+  added_accounts: number;
+  updated_accounts: number;
+  added_keys: number;
+  skipped_accounts: number;
+  skipped_keys: number;
+  imported_logs: number;
+  skipped_logs: number;
 }

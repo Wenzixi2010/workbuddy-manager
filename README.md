@@ -101,6 +101,10 @@
 
 完整清单（每条带详解）见 [功能一览（完整版）](docs/features.md)。
 
+账号 JSON 导入、Key 再次查看、账号双向权限与旧版 SQLite 迁移，见 [导入与权限使用说明](docs/import-migration-account-access.md)。
+
+**部署此定制版：** [Linux Docker Compose 部署指南](docs/linux-docker-compose.md)（从本仓库克隆，管理端与带账号隔离补丁的 Go 上游一起部署）。
+
 ---
 
 ## 界面预览

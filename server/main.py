@@ -17,7 +17,7 @@ from . import config, db, redpacket, security
 from .iputil import client_ip
 from .stdio_utf8 import force_utf8_stdio
 from .routers import (
-    accounts, accountrisk as accountrisk_router, anthropic, auth, gateway, keys, logs, models, playground,
+    accounts, migration, accountrisk as accountrisk_router, anthropic, auth, gateway, keys, logs, models, playground,
     pgsync as pgsync_router, redpackets, responses, security as security_router,
     proxies, settings, stats, system, tokens, upstreams, watchdog as watchdog_router,
 )
@@ -287,6 +287,7 @@ app.add_middleware(ApiBodyLimitMiddleware)
 # ── 路由注册顺序很重要：先 API / 网关，最后挂静态文件 ──
 app.include_router(auth.router)
 app.include_router(accounts.router)
+app.include_router(migration.router)
 app.include_router(accountrisk_router.router)
 app.include_router(keys.router)
 # 红包：批量发放带额度的密钥（与密钥同属「分发」这件事，所以挨着放）

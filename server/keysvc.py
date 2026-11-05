@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import time
@@ -163,11 +164,24 @@ def _json_list(raw: object) -> list[str]:
     return [str(x) for x in parsed if x]
 
 
+def _account_ids(raw: object) -> list[str]:
+    """Corrupt account scopes must fail closed, never become the public pool."""
+    try:
+        value = json.loads(raw)
+        if not isinstance(value, list) or any(not isinstance(v, str) or not v for v in value):
+            raise ValueError()
+        return value
+    except (TypeError, ValueError):
+        return ['invalid-account-scope']
+
+
 def _parse(row) -> dict:
     return {
         'id': row['id'],
         'name': row['name'],
         'prefix': row['prefix'],
+        'account_ids': _account_ids(row['account_ids']),
+        'bind_mode': 'whitelist' if row['bind_mode'] == 'whitelist' else 'exclusive',
         'enabled': bool(row['enabled']),
         'expires_at': row['expires_at'],
         'max_ips': row['max_ips'],
@@ -207,6 +221,22 @@ def list_keys() -> list[dict]:
     return out
 
 
+class InvalidCustomKey(ValueError):
+    """Credential-free validation error safe to return to the administrator."""
+
+
+class DuplicateKeyError(ValueError):
+    """The credential is already assigned, including disabled/expired keys."""
+
+
+def validate_custom_key(value: str | None) -> str | None:
+    if value in (None, ''):
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,256}', value):
+        raise InvalidCustomKey('自定义 Key 必须为 16–256 位，只能包含英文字母、数字、下划线和连字符；留空则自动生成')
+    return value
+
+
 def create_key(
     name: str,
     expires_at: int | None = None,
@@ -217,7 +247,10 @@ def create_key(
     realm: str = '',
     quota_credit: float = 0,
     upstream_id: int | None = None,
+    account_ids: list[str] | None = None,
+    bind_mode: str = 'whitelist',
     *,
+    custom_key: str | None = None,
     _conn: sqlite3.Connection | None = None,
 ) -> dict:
     """创建一个密钥。返回含**明文 token** 的字典。
@@ -234,11 +267,13 @@ def create_key(
     之所以做成参数而不是让红包自己写一份 INSERT：SQL 抄第二遍就是第二份事实，
     改一处漏一处——本项目在 count_tokens 的鉴权上正是这么漂移出真漏洞的。
     """
-    token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+    # Custom values are complete credentials: never prepend/trim/rewrite them.
+    custom = validate_custom_key(custom_key)
+    token = custom if custom is not None else TOKEN_PREFIX + secrets.token_urlsafe(32)
     sql = ('INSERT INTO api_keys(name, key_hash, key_plain, prefix, enabled, expires_at, '
            'max_ips, ip_allowlist, models, realm, quota, used_tokens, quota_credit, '
-           'used_credit, created_at, upstream_id) '
-           'VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)')
+           'used_credit, created_at, upstream_id, account_ids, bind_mode) '
+           'VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?)')
     args = (
         name,
         _hash(token),
@@ -253,13 +288,40 @@ def create_key(
         _norm_credit_quota(quota_credit),
         int(time.time()),
         _norm_upstream_id(upstream_id),
+        json.dumps(account_ids or []),
+        bind_mode,
     )
-    if _conn is not None:
-        key_id = int(_conn.execute(sql, args).lastrowid or 0)
-        row = _conn.execute('SELECT * FROM api_keys WHERE id = ?', (key_id,)).fetchone()
+    if custom is not None:
+        # One conditional INSERT, not check-then-insert: SQLite serializes the
+        # write even across connections/processes. Existing duplicate legacy
+        # hashes need not be modified by a retroactive UNIQUE migration.
+        custom_sql = sql.replace('VALUES(', 'SELECT ', 1).removesuffix(')')
+        custom_sql += ' WHERE NOT EXISTS (SELECT 1 FROM api_keys WHERE key_hash = ?)'
+
+        def insert_custom(conn: sqlite3.Connection):
+            cursor = conn.execute(custom_sql, (*args, _hash(token)))
+            if cursor.rowcount != 1:
+                raise DuplicateKeyError('该 Key 已存在（包括已停用或过期的 Key），请使用其他值')
+            return conn.execute('SELECT * FROM api_keys WHERE id = ?', (cursor.lastrowid,)).fetchone()
+
+        if _conn is not None:
+            row = insert_custom(_conn)  # Caller owns commit/rollback.
+        else:
+            with db._lock:
+                conn = db.connect()
+                try:
+                    row = insert_custom(conn)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
     else:
-        key_id = db.execute(sql, args)
-        row = db.query_one('SELECT * FROM api_keys WHERE id = ?', (key_id,))
+        if _conn is not None:
+            key_id = int(_conn.execute(sql, args).lastrowid or 0)
+            row = _conn.execute('SELECT * FROM api_keys WHERE id = ?', (key_id,)).fetchone()
+        else:
+            key_id = db.execute(sql, args)
+            row = db.query_one('SELECT * FROM api_keys WHERE id = ?', (key_id,))
     out = _parse(row)
     out['key'] = token  # 创建响应里直接给出，界面不必再调一次 reveal
     return out
@@ -319,6 +381,10 @@ def update_key(key_id: int, patch: dict) -> dict | None:
         # 显式传 null / 0 是**允许**的：管理员可以把密钥改回「默认上游」。
         # 与 realm 同口径，不能用真值判断（否则改不回默认上游）。
         fields['upstream_id'] = _norm_upstream_id(patch['upstream_id'])
+    if 'account_ids' in patch:
+        fields['account_ids'] = json.dumps(patch['account_ids'] or [])
+    if 'bind_mode' in patch:
+        fields['bind_mode'] = patch['bind_mode']
     if fields:
         assignments = ', '.join(f'{k} = ?' for k in fields)
         db.execute(f'UPDATE api_keys SET {assignments} WHERE id = ?', (*fields.values(), key_id))
@@ -352,7 +418,7 @@ def reset_usage(key_id: int) -> bool:
 
 def resolve(token: str) -> dict | None:
     """按前缀定位后比对哈希，避免全表扫描。"""
-    if not token or not token.startswith(TOKEN_PREFIX):
+    if not token or len(token) > 2048:
         return None
     rows = db.query('SELECT * FROM api_keys WHERE prefix = ?', (token[:12],))
     digest = _hash(token)

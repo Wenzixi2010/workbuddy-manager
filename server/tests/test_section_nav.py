@@ -118,7 +118,7 @@ class SectionNavBehaviourTest(unittest.TestCase):
         def run_once() -> subprocess.CompletedProcess:
             return subprocess.run(
                 [_NODE, '--experimental-strip-types', str(_SCRIPT)],
-                capture_output=True, text=True, timeout=120, cwd=str(_ROOT),
+                capture_output=True, text=True, encoding='utf-8', timeout=120, cwd=str(_ROOT),
             )
 
         proc = run_once()
@@ -145,8 +145,8 @@ class SectionNavInvariantTest(unittest.TestCase):
         )
         for section, items in self.nav.items():
             self.assertEqual(
-                len(items), 2,
-                f'「{section}」这一节解析出 {len(items)} 项，应当是 2 项。'
+                len(items), 3 if section == 'accounts' else 2,
+                f'「{section}」这一节解析出 {len(items)} 项，账号节含迁移入口，其余节应当为 2 项。'
                 '只有一项就不该叫「二级导航」；解析失效也会走到这里。',
             )
 

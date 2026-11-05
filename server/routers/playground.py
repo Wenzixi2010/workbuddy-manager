@@ -81,8 +81,8 @@ async def chat(body: ChatIn, request: Request, user: dict = Depends(security.req
         # 让上游在末帧返回 usage（含 credit），界面据此显示本次消耗
         payload['stream_options'] = {'include_usage': True}
 
-    headers = gateway._upstream_headers(upstream)
-    url = f'{upstream["base_url"]}/v1/chat/completions'
+    headers = await gateway._scoped_upstream_headers(upstream, None)
+    url = upstream["base_url"] + gateway._scoped_path("/v1/chat/completions", headers)
 
     client = config.http_client(config.UPSTREAM_TIMEOUT, connect=5)
     try:

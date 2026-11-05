@@ -1,18 +1,19 @@
 'use client';
 
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {KeyRound, Plus, Trash2, Ban, CircleCheck, Pencil, RotateCcw, Copy, Check, Loader2} from 'lucide-react';
+import {KeyRound, Plus, Trash2, Ban, CircleCheck, Pencil, RotateCcw, Eye, Loader2} from 'lucide-react';
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {notify} from '@/lib/toast';
 import {keyApi, upstreamsApi, errText} from '@/lib/api';
 import {BASE_PATH} from '@/lib/base-path';
 import type {ApiKey, KeyImportResult, KeyImportStatus, UpstreamEndpoint} from '@/lib/types';
-import {copyText, fmtDateTime, fmtNumber} from '@/lib/format';
+import {fmtDateTime, fmtNumber} from '@/lib/format';
 import {PageHeader} from '@/components/common/layout/PageHeader';
 import {PageSectionTabs} from '@/components/common/layout/PageSectionTabs';
 import {EmptyState} from '@/components/common/layout/EmptyState';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
+import {KeyAccountSelector} from '@/components/common/keys/KeyAccountSelector';
 import {ModelWhitelistInput} from '@/components/common/keys/ModelWhitelistInput';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
@@ -55,6 +56,10 @@ import {
 
 interface FormState {
   name: string;
+  customKeyEnabled: boolean;
+  customKey: string;
+  account_ids: string[];
+  bind_mode: 'whitelist' | 'exclusive';
   /** 新建：0 = 永不过期；编辑：0 = 保持当前有效期不变 */
   expiresDays: string;
   /** 编辑时的有效期操作：keep 保持不变 / days 从现在起 N 天 / never 永不过期 */
@@ -73,6 +78,10 @@ interface FormState {
 
 const emptyForm: FormState = {
   name: '',
+  customKeyEnabled: false,
+  customKey: '',
+  account_ids: [],
+  bind_mode: 'whitelist',
   expiryMode: 'keep',
   expiresDays: '0',
   maxIps: '0',
@@ -149,8 +158,7 @@ export default function KeysPage() {
    */
   const [revealed, setRevealed] = useState<{name: string; key: string} | null>(null);
   const [revealing, setRevealing] = useState<number | null>(null);
-  /** 刚复制成功的那一行（短暂显示对勾，移动端看不到 toast 时也有反馈） */
-  const [copiedId, setCopiedId] = useState<number | null>(null);
+
   /**
    * 一次性展示弹窗里选中的导出目标（cc-switch 还要分 Claude / Codex）。
    *
@@ -239,6 +247,10 @@ export default function KeysPage() {
     setEditing(k);
     setForm({
       name: k.name,
+      customKeyEnabled: false,
+      customKey: '',
+      account_ids: k.account_ids || [],
+      bind_mode: k.bind_mode || 'whitelist',
       // 默认不改动有效期；要续期/取消过期需显式选择
       expiryMode: 'keep',
       expiresDays: '0',
@@ -260,6 +272,10 @@ export default function KeysPage() {
     if (submitting.current) return;
     if (!form.name.trim()) {
       notify.err(t('keys.nameRequired'));
+      return;
+    }
+    if (!editing && form.customKeyEnabled && form.customKey && !/^[A-Za-z0-9_-]{16,256}$/.test(form.customKey)) {
+      notify.err(t('keys.customKeyInvalid'));
       return;
     }
     submitting.current = true;
@@ -285,6 +301,8 @@ export default function KeysPage() {
         // 绑定上游（多上游 / 分组隔离）：null = 默认上游，照传——
         // 后端以它区分「显式改回默认上游」与「本次没提交该字段」（PATCH 语义）。
         upstream_id: form.upstream_id,
+        account_ids: form.account_ids,
+        bind_mode: form.bind_mode,
       };
 
       // 新建：填了天数才设过期（0 = 永不过期，不下发 expires_at）
@@ -307,7 +325,10 @@ export default function KeysPage() {
         await keyApi.update(editing.id, payload as Partial<ApiKey>);
         notify.ok(t('keys.keyUpdated'));
       } else {
-        const created = await keyApi.create(payload as Partial<ApiKey>);
+        const created = await keyApi.create({
+          ...payload as Partial<ApiKey>,
+          ...(form.customKeyEnabled && form.customKey ? {custom_key: form.customKey} : {}),
+        });
         notify.ok(t('keys.keyCreated'));
         if (created.key) {
           setIssued(created.key);
@@ -317,6 +338,7 @@ export default function KeysPage() {
         }
       }
       setFormOpen(false);
+      setForm(old => ({...old, customKey: '', customKeyEnabled: false}));
       // 刷新失败**不能**把这次创建判成失败：密钥已经建好了。
       // 所以这里用 reload() 的返回值判断，而不是 `.catch()` —— reload 内部已经
       // 把异常收进 errors 并返回布尔值，返回的 Promise 永远不 reject，
@@ -342,29 +364,13 @@ export default function KeysPage() {
     }
   }
 
-  /**
-   * 「再复制一次」：向后端要一次明文，然后直接写进剪贴板。
-   *
-   * 为什么点一下就是复制、而不是先开弹窗：用户来这一行就是为了复制（密钥本身
-   * 贴进客户端配置），多一次点击没有意义。`copyText` 在非安全上下文里会退回
-   * `execCommand('copy')`；两条路都不行时（浏览器拦了）才把密钥显示出来让他手动
-   * 选中复制 —— 静默失败只会变成「点了没反应」。
-   *
-   * 取不回来（存量密钥，库里只有哈希）时后端回 409 且说明该怎么办，
-   * 这里原样弹给他，不再自己编一句。
-   */
-  async function copyKey(k: ApiKey) {
+  /** 主动查看只打开弹窗，不自动写剪贴板；关闭时清除明文。 */
+  async function viewKey(k: ApiKey) {
     if (revealing !== null) return;
     setRevealing(k.id);
     try {
       const r = await keyApi.reveal(k.id);
-      if (await copyText(r.key)) {
-        notify.ok(t('keys.keyCopied'), r.name || k.name);
-        setCopiedId(k.id);
-        window.setTimeout(() => setCopiedId(null), 1500);
-      } else {
-        setRevealed({name: r.name || k.name, key: r.key});
-      }
+      setRevealed({name: r.name || k.name, key: r.key});
     } catch (e) {
       notify.err(errText(e));
     } finally {
@@ -746,18 +752,17 @@ export default function KeysPage() {
                             （会话管理员 + 审计）。存量密钥取不回来时后端会说明原因。 */}
                         <Button
                           variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md"
-                          title={t('keys.copyKey')}
-                          aria-label={t('keys.copyKey')}
+                          size="sm"
+                          className="h-7 gap-1 px-2 rounded-md"
+                          title={t('keys.viewKey')}
+                          aria-label={t('keys.viewKey')}
                           disabled={revealing !== null}
-                          onClick={() => void copyKey(k)}
+                          onClick={() => void viewKey(k)}
                         >
                           {revealing === k.id
                             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            : copiedId === k.id
-                              ? <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                              : <Copy className="h-3.5 w-3.5" />}
+                            : <Eye className="h-3.5 w-3.5" />}
+                          {t('keys.viewKey')}
                         </Button>
                         <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" title={t('keys.edit')} onClick={() => openEdit(k)}>
                           <Pencil className="h-3.5 w-3.5" />
@@ -834,7 +839,10 @@ export default function KeysPage() {
       </section>
 
       {/* 新建 / 编辑 */}
-      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+      <Dialog open={formOpen} onOpenChange={open => {
+        setFormOpen(open);
+        if (!open) setForm(old => ({...old, customKey: '', customKeyEnabled: false}));
+      }}>
         <DialogContent className="max-w-[520px]">
           <DialogHeader>
             <DialogTitle>{editing ? t('keys.editTitle') : t('keys.createTitle')}</DialogTitle>
@@ -848,6 +856,26 @@ export default function KeysPage() {
                 <Label className="text-[11px] text-muted-foreground">{t('keys.name')}</Label>
                 <Input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} placeholder={t('keys.namePlaceholder')} />
               </div>
+              {!editing && (
+                <div className="space-y-2 rounded-lg border p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="custom-key-enabled">{t('keys.customKeyOption')}</Label>
+                    <Switch id="custom-key-enabled" checked={form.customKeyEnabled} disabled={busy}
+                      onCheckedChange={enabled => setForm(old => ({...old, customKeyEnabled: enabled, customKey: ''}))} />
+                  </div>
+                  <p className="text-xs leading-5 text-muted-foreground">{t('keys.customKeyHint')}</p>
+                  {form.customKeyEnabled && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="custom-key-value" className="text-xs">{t('keys.customKeyLabel')}</Label>
+                      <Input id="custom-key-value" type="password" autoComplete="new-password" spellCheck={false}
+                        maxLength={256} disabled={busy} value={form.customKey}
+                        placeholder={t('keys.customKeyPlaceholder')}
+                        onChange={e => setForm(old => ({...old, customKey: e.target.value}))} />
+                      <p className="text-xs leading-5 text-muted-foreground">{t('keys.customKeySecurity')}</p>
+                    </div>
+                  )}
+                </div>
+              )}
               {!editing ? (
                 <div className="space-y-1.5">
                   <Label className="text-[11px] text-muted-foreground">{t('keys.expiresInDays')}</Label>
@@ -1018,7 +1046,7 @@ export default function KeysPage() {
                 <Select
                   value={form.upstream_id == null ? '__default__' : String(form.upstream_id)}
                   onValueChange={(v) =>
-                    setForm({...form, upstream_id: v === '__default__' ? null : Number(v)})
+                    setForm({...form, upstream_id: v === '__default__' ? null : Number(v), account_ids: []})
                   }
                 >
                   <SelectTrigger aria-label={t('keys.upstreamLabel')}>
@@ -1039,6 +1067,9 @@ export default function KeysPage() {
                   {t('keys.upstreamHint')}
                 </p>
               </div>
+              {formOpen && <KeyAccountSelector value={form.account_ids} mode={form.bind_mode} upstreamId={form.upstream_id}
+                onChange={ids => setForm(old => ({...old, account_ids: ids}))}
+                onModeChange={mode => setForm(old => ({...old, bind_mode: mode}))} />}
               <div className="space-y-1.5">
                 <Label className="text-[11px] text-muted-foreground">{t('keys.modelWhitelist')}</Label>
                 {/* 手输保留（清单里暂时没有的模型仍要能填），旁边给「从清单选择」：
@@ -1090,7 +1121,7 @@ export default function KeysPage() {
             </div>
           </DialogBody>
           <DialogFooter>
-            <Button variant="outline" className="rounded-full" onClick={() => setFormOpen(false)}>
+            <Button variant="outline" className="rounded-full" onClick={() => { setFormOpen(false); setForm(old => ({...old, customKey: '', customKeyEnabled: false})); }}>
               {t('common.cancel')}
             </Button>
             <Button className="rounded-full" onClick={submit} disabled={busy}>
@@ -1291,7 +1322,7 @@ export default function KeysPage() {
           </DialogBody>
           <DialogFooter>
             <Button className="rounded-full" onClick={() => setRevealed(null)}>
-              {t('keys.savedIt')}
+              {t('common.close')}
             </Button>
           </DialogFooter>
         </DialogContent>

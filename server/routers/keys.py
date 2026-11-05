@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import ipaddress
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import config, db, keysvc, security, upstreamsvc
-from ..services import keyexport, keyimport, modelcatalog, modelmap
+from ..services import accountaccess, keyexport, keyimport, modelcatalog, modelmap
 from ..iputil import client_ip
 
 router = APIRouter(prefix='/api/keys', tags=['keys'])
@@ -62,6 +63,9 @@ def _check_name(name: str | None) -> None:
 
 
 class KeyIn(BaseModel):
+    custom_key: str | None = Field(default=None, repr=False)
+    account_ids: list[str] = Field(default_factory=list, max_length=500)
+    bind_mode: Literal['whitelist', 'exclusive'] = 'whitelist'
     name: str = Field(min_length=1, max_length=64)
     # 绑定的上游（多上游 / 分组隔离）：null / 0 / 省略 = 默认上游。
     # 类型是 int 而不是 str：界面上是下拉选 id，存成整数才能在外键式查询里用。
@@ -80,6 +84,8 @@ class KeyIn(BaseModel):
 
 
 class KeyPatch(BaseModel):
+    account_ids: list[str] | None = Field(default=None, max_length=500)
+    bind_mode: Literal['whitelist', 'exclusive'] | None = None
     name: str | None = None
     # 显式传 null 是**允许**的：把密钥改回默认上游（与 realm 同口径）。
     upstream_id: int | None = None
@@ -146,17 +152,26 @@ def create_key(body: KeyIn, request: Request,
     _check_name(body.name)
     _check_ip_allowlist(body.ip_allowlist)
     _check_upstream(body.upstream_id)
-    created = keysvc.create_key(
-        name=body.name,
-        expires_at=body.expires_at,
-        max_ips=body.max_ips,
-        ip_allowlist=body.ip_allowlist,
-        models=body.models,
-        quota=body.quota,
-        realm=body.realm,
-        quota_credit=body.quota_credit,
-        upstream_id=body.upstream_id,
-    )
+    accountaccess.validate_selection(body.account_ids, body.upstream_id)
+    try:
+        created = keysvc.create_key(
+            name=body.name,
+            custom_key=body.custom_key,
+            expires_at=body.expires_at,
+            max_ips=body.max_ips,
+            ip_allowlist=body.ip_allowlist,
+            models=body.models,
+            quota=body.quota,
+            realm=body.realm,
+            quota_credit=body.quota_credit,
+            upstream_id=body.upstream_id,
+            account_ids=body.account_ids,
+            bind_mode=body.bind_mode,
+        )
+    except keysvc.InvalidCustomKey as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except keysvc.DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     # 密钥是拿额度用的凭证，发放必须留痕（含来源 IP）
     upstream_name = '默认上游'
     if created.get('upstream_id'):
@@ -177,6 +192,14 @@ def update_key(key_id: int, body: KeyPatch, user: dict = Depends(security.requir
         _check_ip_allowlist(patch['ip_allowlist'])
     if 'upstream_id' in patch:
         _check_upstream(patch['upstream_id'])
+    existing = next((k for k in keysvc.list_keys() if k['id'] == key_id), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail='密钥不存在')
+    if 'account_ids' in patch or 'upstream_id' in patch:
+        accountaccess.validate_selection(patch.get('account_ids', existing['account_ids']) or [],
+                                         patch.get('upstream_id', existing['upstream_id']))
+    if patch.get('bind_mode', 'whitelist') is None:
+        raise HTTPException(status_code=400, detail='绑定方式不能为空')
     updated = keysvc.update_key(key_id, patch)
     if not updated:
         raise HTTPException(status_code=404, detail='密钥不存在')

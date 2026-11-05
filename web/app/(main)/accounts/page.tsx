@@ -73,6 +73,8 @@ import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {AddAccountDialog} from '@/components/common/accounts/AddAccountDialog';
 import {AccountRiskWarnings} from '@/components/common/accounts/AccountRiskWarnings';
+import {AccountKeyAccessDialog} from '@/components/common/accounts/AccountKeyAccessDialog';
+import {ImportJsonAccountsButton} from '@/components/common/accounts/ImportJsonAccountsButton';
 import {UploadAccountsButton} from '@/components/common/accounts/UploadAccountsButton';
 import {CreditCountdown} from '@/components/common/accounts/CreditCountdown';
 import {AccountNoteDialog} from '@/components/common/accounts/AccountNoteDialog';
@@ -134,6 +136,7 @@ export default function AccountsPage() {
   const [proxyRoutes, setProxyRoutes] = useState<string[] | null>(null);
   // 备注编辑（issue #67）：记的是**哪个账号**而不是布尔——弹窗要以该账号当前的
   // 备注为初值，否则会拿上一个账号的内容去保存。
+  const [keyAccessTarget, setKeyAccessTarget] = useState<Account | null>(null);
   const [noteTarget, setNoteTarget] = useState<Account | null>(null);
   // 权重弹窗的目标账号（issue #187）：与备注分开两个弹窗 —— 备注存本端库，
   // 权重写上游账号文件，混在一起容易让人以为「改了不用重启」。
@@ -1009,6 +1012,11 @@ export default function AccountsPage() {
         >
           <StickyNote className={'h-3.5 w-3.5 ' + (a.note ? 'text-amber-600 dark:text-amber-400' : '')} />
         </Button>
+        <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md"
+          title={t('accountAccess.title')} aria-label={t('accountAccess.title')} disabled={busy}
+          onClick={() => setKeyAccessTarget(a)}>
+          <KeyRound className={'h-3.5 w-3.5 ' + ((a.allowed_key_ids?.length || a.reserved_by_key_ids?.length) ? 'text-primary' : '')} />
+        </Button>
         {/* 手写权重（issue #187）：上游选号的乘数，默认 1。
             与备注同一类「账号元数据」，所以挨着放；但它是**写上游账号文件**的，
             改完要重载上游才生效——弹窗里写清了这一点。设过权重（≠1）时图标染成
@@ -1326,7 +1334,10 @@ export default function AccountsPage() {
               </span>
             )}
             {isAdmin && (
-              <UploadAccountsButton upstreamId={groupId} groups={groups} onSuccess={reloadAll} />
+              <>
+                <ImportJsonAccountsButton upstreamId={groupId} onSuccess={reloadAll} />
+                <UploadAccountsButton upstreamId={groupId} groups={groups} onSuccess={reloadAll} />
+              </>
             )}
             {isAdmin && (
               <Button size="sm" className="rounded-full" onClick={() => setAddOpen(true)}>
@@ -1757,6 +1768,8 @@ export default function AccountsPage() {
           void groupList.reload();
         }}
       />
+      <AccountKeyAccessDialog account={keyAccessTarget} upstreamId={groupId}
+        onClose={() => setKeyAccessTarget(null)} onSaved={reloadAll} />
       <AccountNoteDialog
         account={noteTarget}
         open={noteTarget !== null}

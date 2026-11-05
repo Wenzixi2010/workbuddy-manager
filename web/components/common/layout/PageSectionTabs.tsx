@@ -2,6 +2,7 @@
 
 import type {ReactNode} from 'react';
 import {
+  Database,
   Boxes,
   ClipboardList,
   Gift,
@@ -36,6 +37,7 @@ import {SECTION_NAV, sectionNavFromPath, type SectionNavIconKey} from '@/lib/sec
  * `ui/tabs.tsx` 的分工就是「地址栏动不动」。
  */
 const ICONS: Record<SectionNavIconKey, ReactNode> = {
+  migration: <Database className="h-3.5 w-3.5" />,
   accounts: <Users className="h-3.5 w-3.5" />,
   tasks: <ClipboardList className="h-3.5 w-3.5" />,
   keys: <KeyRound className="h-3.5 w-3.5" />,

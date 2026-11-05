@@ -4,6 +4,8 @@ import {t, tp} from './i18n';
 import type {Realm} from './realm-context';
 import type {
   Account,
+  AccountImportResult,
+  LegacyMigrationResult,
   AccountsResponse,
   RefreshPlan,
   DailyPlan,
@@ -196,6 +198,11 @@ export const accountRiskApi = {
 };
 
 export const accountApi = {
+  importJson: (content: string, upstreamId?: number | null, overwrite = false) =>
+    post<AccountImportResult>('/api/accounts/import-json' + groupQs(upstreamId), {content, overwrite}),
+  setKeyAccess: (filename: string, key_ids: number[], upstreamId?: number | null) =>
+    put<{ok: boolean; allowed_key_ids: number[]}>(
+      `/api/accounts/${encodeURIComponent(filename)}/key-access` + groupQs(upstreamId), {key_ids}),
   proxies: () => get<{routes: string[]; default: string}>('/api/proxies'),
   /** 上游「账号管理接口」（admin.enabled）开关状态；供解禁队列判断能否真的解封。
    *  非默认分组返回 null（面板读不到那套实例的 config.json）。 */
@@ -495,7 +502,7 @@ export const upstreamsApi = {
 
 export const keyApi = {
   list: () => get<ApiKey[]>('/api/keys'),
-  create: (body: Partial<ApiKey>) => post<ApiKey>('/api/keys', body),
+  create: (body: Partial<ApiKey> & {custom_key?: string}) => post<ApiKey>('/api/keys', body),
   update: (id: number, body: Partial<ApiKey>) => patch<ApiKey>(`/api/keys/${id}`, body),
   remove: (id: number) => del<{ok: boolean}>(`/api/keys/${id}`),
   resetUsage: (id: number) => post<{ok: boolean}>(`/api/keys/${id}/reset-usage`),
@@ -871,4 +878,15 @@ export const pgSyncApi = {
   importData: () =>
     post<{ok: boolean; message: string; status: PgSyncStatus}>('/api/settings/pg-sync/import'),
   status: () => get<PgSyncStatus>('/api/settings/pg-sync/status'),
+};
+
+export const migrationApi = {
+  sqlite: async (file: File, options: {preview: boolean; overwrite: boolean; includeLogs: boolean; upstreamId: number | null}) => {
+    const body = new FormData();
+    body.append('file', file, file.name);
+    const params = {preview: options.preview, overwrite: options.overwrite,
+      include_logs: options.includeLogs, ...(options.upstreamId == null ? {} : {upstream_id: options.upstreamId})};
+    const response = await http.post<LegacyMigrationResult>('/api/migration/sqlite', body, {params, timeout: 120000});
+    return response.data;
+  },
 };

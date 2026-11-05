@@ -137,6 +137,12 @@ CREATE TABLE IF NOT EXISTS api_keys (
   key_plain     TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_keys_prefix ON api_keys(prefix);
+CREATE TABLE IF NOT EXISTS account_key_access (
+  auth_dir TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  key_ids TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY(auth_dir, account_id)
+);
 
 CREATE TABLE IF NOT EXISTS api_key_ips (
   key_id     INTEGER NOT NULL,
@@ -697,6 +703,8 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # 存量密钥为空串 = 取不回明文：那一版只存哈希，界面上要说清「去重建一把」，
     # 而不是显示一个空密钥让人以为复制坏了。
     ('api_keys', 'key_plain', "TEXT NOT NULL DEFAULT ''"),
+    ('api_keys', 'account_ids', "TEXT NOT NULL DEFAULT '[]'"),
+    ('api_keys', 'bind_mode', "TEXT NOT NULL DEFAULT 'whitelist'"),
     # 入站请求被拦的**原因**（issue #33）。
     #
     # 此前这张表只有一个 blocked 布尔：界面显示「已拦截」，但看不出是「没带

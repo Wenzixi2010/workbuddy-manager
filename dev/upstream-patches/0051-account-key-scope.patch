@@ -1,0 +1,447 @@
+diff --git a/internal/auth/auth.go b/internal/auth/auth.go
+--- a/internal/auth/auth.go
++++ b/internal/auth/auth.go
+@@ -234,6 +234,18 @@
+ 	a.mu.Lock()
+ 	defer a.mu.Unlock()
+ 	return a.realm
++}
++
++// AccountScopeID is stable across routing escape-hatch changes. Permissions
++// describe a credential, not the realm selected by a temporary routing switch.
++func (a *Auth) AccountScopeID() string {
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	realm := strings.ToLower(strings.TrimSpace(a.realm))
++	if realm != "cn" && realm != "global" {
++		realm = ""
++	}
++	return ResolveRealm(realm, a.Domain) + ":" + a.UID
+ }
+ 
+ // IsGlobal 报告账号是否属于 global realm（= Realm() == "global"）。
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -200,7 +200,10 @@
+ 	}
+ 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), largeUsed: make(map[string][]time.Time)}
+ 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
++	h.mux.HandleFunc("POST /v1/scoped/chat/completions", h.withAuth(h.scopedChatCompletions))
++	h.mux.HandleFunc("POST /v2/scoped/chat/completions", h.withAuth(h.scopedChatCompletions))
+ 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
++	h.mux.HandleFunc("GET /v1/scoped/models", h.withAuth(h.scopedModels))
+ 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
+ 	h.mux.HandleFunc("GET /v1/stats", h.withAuth(h.stats))
+ 	h.mux.HandleFunc("POST /v1/stats/reset", h.withAuth(h.statsReset))
+@@ -285,12 +288,13 @@
+ 	// realm_totals 按域分组的计数汇总（双 realm 并存时运维一眼看到各域可用性）：
+ 	// 只新增字段，既有 total/healthy/cooling/disabled/in_flight_full 汇总键不变（零回归）。
+ 	writeJSON(w, http.StatusOK, map[string]any{
+-		"accounts":       h.cfg.Pool.List(),
+-		"total":          total,
+-		"healthy":        healthy,
+-		"cooling":        cooling,
+-		"disabled":       disabled,
+-		"in_flight_full": inFlightFull,
++		"account_scope_version": 1,
++		"accounts":              h.cfg.Pool.List(),
++		"total":                 total,
++		"healthy":               healthy,
++		"cooling":               cooling,
++		"disabled":              disabled,
++		"in_flight_full":        inFlightFull,
+ 		"realm_totals": map[string]map[string]int{
+ 			"cn":     countsMapFrom(h.cfg.Pool.CountsDetailedForRealm("cn")),
+ 			"global": countsMapFrom(h.cfg.Pool.CountsDetailedForRealm("global")),
+@@ -446,8 +450,12 @@
+ // 纯动态：动态拉取失败/无号 → 该域空列表，无静态兜底；
+ // global.enabled=false（显式逃生门）时只列 CN（global 名单不出现）。
+ func (h *Handler) modelList() []map[string]any {
++	return h.modelListScoped(nil)
++}
++
++func (h *Handler) modelListScoped(rule *accountScope) []map[string]any {
+ 	out := make([]map[string]any, 0)
+-	for _, mi := range h.fetchDynamicModels() {
++	for _, mi := range h.fetchScopedCNModels(rule) {
+ 		entry := map[string]any{
+ 			"id":       "cn:" + mi.ID,
+ 			"object":   "model",
+@@ -483,7 +491,7 @@
+ 	if h.cfg.GlobalEnabled {
+ 		// global 域 effort 能力三级查找：探测下发桶（权威）→ 静态兜底表 → 省略。
+ 		// 先 fetchGlobalModels（内部探测并落 effort 桶），再按 id 取快照。
+-		globalIDs, globalAccount := h.fetchGlobalModels()
++		globalIDs, globalAccount := h.fetchScopedGlobalModels(rule)
+ 		// 探测对象形态的全字段条目（与 fetchGlobalModels 共享同一次探测缓存）：
+ 		// 命中 id 才透出富字段；窄表/失败 → nil，按裸 ID 条目输出（不编造字段）。
+ 		// globalAccount 为 nil（无 global 号）时返回 nil，跳过富字段映射。
+@@ -605,6 +613,11 @@
+ }
+ 
+ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
++	scopeRule, scopeErr := parseAccountScope(r, h.cfg.APIKey)
++	if scopeErr != nil {
++		writeOpenAIError(w, http.StatusForbidden, "invalid_account_scope", scopeErr.Error())
++		return
++	}
+ 	// 请求体无大小上限（max_body_mb 已移除）：完整读入，超限类问题交由上游自然返回
+ 	// 错误（其响应经既有错误分类链路透出，信息量更大）。#41 的截断防御语义保留在
+ 	// 读错误路径——移除预拦截后，截断只可能来自客户端自己断流，读 body 出错就地 400，
+@@ -655,6 +668,12 @@
+ 	stickyKey := sessKey
+ 	if stickyKey == "" {
+ 		stickyKey = session.StickyFallbackKey(body)
++	}
++	if scopeRule != nil && stickyKey != "" {
++		// Namespace sticky state by the effective scope, not just the key ID:
++		// editing permissions must not revive a previously permitted binding.
++		namespace, _ := json.Marshal([]any{scopeRule.Key, scopeRule.Allow, scopeRule.Deny})
++		stickyKey = "account-scope:" + string(namespace) + ":" + stickyKey
+ 	}
+ 	stickyUID := ""
+ 	if h.cfg.Session != nil && stickyKey != "" {
+@@ -806,7 +825,8 @@
+ 		var acct *auth.Auth
+ 		if stickyUID != "" && !(budgetMode && hotAccounts[stickyUID]) {
+ 			acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
+-			if acct == nil || (realm != "" && acct.Realm() != realm) {
++			if acct == nil || !scopeRule.permits(acct) || (realm != "" && acct.Realm() != realm) {
++				acct = nil
+ 				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）或 realm 不符 → 解绑。
+ 				unbindSticky()
+ 			}
+@@ -814,11 +834,11 @@
+ 		if acct == nil {
+ 			// 模型感知 + realm 感知选号：模型非空时启用 6004 模型级冷却豁免
+ 			// （healthyForModel），realm 谓词过滤跨域账号。
+-			pickTried := tried
++			pickTried := h.scopedExclusions(scopeRule, tried)
+ 			if rotateMode || budgetMode {
+ 				if extra := hotAccounts; len(extra) > 0 {
+ 					pickTried = make(map[string]bool, len(tried)+len(extra))
+-					for k, v := range tried {
++					for k, v := range h.scopedExclusions(scopeRule, tried) {
+ 						pickTried[k] = v
+ 					}
+ 					for k := range extra {
+@@ -829,12 +849,17 @@
+ 			acct = h.cfg.Pool.PickExcludingForRealm(pickTried, bareModel, realm)
+ 			if acct == nil && (rotateMode || budgetMode) {
+ 				// 所有号都在大请求窗口内：退化普通轮换，避免直接 503。
+-				acct = h.cfg.Pool.PickExcludingForRealm(tried, bareModel, realm)
++				acct = h.cfg.Pool.PickExcludingForRealm(h.scopedExclusions(scopeRule, tried), bareModel, realm)
+ 			}
+ 		}
+ 		// 记账在选号之后统一做：粘性路径同样要计数，否则「一直粘同一个号」永远不会
+ 		// 把预算用满，预算机制形同虚设（ResolveForModel 在无绑定时会预分配号，
+ 		// 首条请求走的就是粘性分支）。
++		// Last gate closes the race with a concurrent auth-file reload.
++		if acct != nil && !scopeRule.permits(acct) {
++			tried[acct.UID] = true
++			continue
++		}
+ 		if acct != nil && (rotateMode || budgetMode) {
+ 			h.noteLargeUse(acct.UID, time.Now())
+ 		}
+@@ -850,7 +875,7 @@
+ 			// 只要另一个 realm 还有账号，全池判据就永远非空，自愈永不触发；而本次请求
+ 			// 的 realm 池已被负缓存全挡，于是固定 503（换任何模型都一样，逐个被打成
+ 			// 负缓存）。realm 为空时该变体退化为全池语义，单 realm 部署行为不变。
+-			if !modelBlocksCleared && bareModel != "" && len(h.cfg.Pool.AvailableUIDsForModelRealm(bareModel, realm)) == 0 {
++			if scopeRule == nil && !modelBlocksCleared && bareModel != "" && len(h.cfg.Pool.AvailableUIDsForModelRealm(bareModel, realm)) == 0 {
+ 				if n := h.cfg.Pool.ClearModelBlocks(bareModel); n > 0 {
+ 					modelBlocksCleared = true
+ 					tried = map[string]bool{}
+diff --git a/internal/server/account_scope.go b/internal/server/account_scope.go
+new file mode 100644
+--- /dev/null
++++ b/internal/server/account_scope.go
+@@ -0,0 +1,144 @@
++package server
++
++import (
++	"crypto/hmac"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"time"
++
++	"workbuddy2api/internal/auth"
++	"workbuddy2api/internal/upstream"
++)
++
++// A manager-signed, request-local scope. Never stored in the pool: concurrent
++// keys must not change one another's candidates or bypass filtering on retries.
++type accountScope struct {
++	Version  int      `json:"version"`
++	Key      string   `json:"key"`
++	Issued   int64    `json:"issued"`
++	Allow    []string `json:"allow"`
++	Deny     []string `json:"deny"`
++	allowSet map[string]bool
++	denySet  map[string]bool
++}
++
++func parseAccountScope(r *http.Request, apiKey string) (*accountScope, error) {
++	value := r.Header.Get("X-WB-Account-Scope")
++	if value == "" {
++		return nil, nil
++	}
++	if apiKey == "" || len(value) > 65536 {
++		return nil, errors.New("invalid account scope")
++	}
++	sig, err := hex.DecodeString(r.Header.Get("X-WB-Account-Scope-Signature"))
++	mac := hmac.New(sha256.New, []byte(apiKey))
++	mac.Write([]byte(value))
++	if err != nil || !hmac.Equal(sig, mac.Sum(nil)) {
++		return nil, errors.New("invalid account scope signature")
++	}
++	raw, err := base64.RawURLEncoding.DecodeString(value)
++	if err != nil {
++		return nil, errors.New("invalid account scope")
++	}
++	var rule accountScope
++	if json.Unmarshal(raw, &rule) != nil || rule.Version != 1 || rule.Key == "" ||
++		rule.Issued < time.Now().Unix()-60 || rule.Issued > time.Now().Unix()+30 {
++		return nil, errors.New("invalid or expired account scope")
++	}
++	rule.allowSet = make(map[string]bool)
++	rule.denySet = make(map[string]bool)
++	for _, id := range rule.Allow {
++		rule.allowSet[id] = true
++	}
++	for _, id := range rule.Deny {
++		rule.denySet[id] = true
++	}
++	return &rule, nil
++}
++
++func (s *accountScope) permitsID(realm, uid string) bool {
++	if s == nil {
++		return true
++	}
++	if realm == "" {
++		realm = "cn"
++	}
++	id := realm + ":" + uid
++	return !s.denySet[id] && (s.Allow == nil || s.allowSet[id])
++}
++
++func (s *accountScope) permits(a *auth.Auth) bool {
++	if a == nil {
++		return false
++	}
++	if s == nil {
++		return true
++	}
++	id := a.AccountScopeID()
++	return !s.denySet[id] && (s.Allow == nil || s.allowSet[id])
++}
++
++func (h *Handler) scopedExclusions(s *accountScope, tried map[string]bool) map[string]bool {
++	if s == nil {
++		return tried
++	}
++	out := make(map[string]bool, len(tried))
++	for uid, v := range tried {
++		out[uid] = v
++	}
++	for _, a := range h.cfg.Pool.List() {
++		if !s.permits(h.cfg.Pool.AuthByUID(a.UID)) {
++			out[a.UID] = true
++		}
++	}
++	return out
++}
++
++// Old upstreams return 404 for this path rather than ignoring a scope header.
++func (h *Handler) scopedChatCompletions(w http.ResponseWriter, r *http.Request) {
++	if r.Header.Get("X-WB-Account-Scope") == "" {
++		writeOpenAIError(w, http.StatusForbidden, "missing_account_scope", "account scope is required")
++		return
++	}
++	h.chatCompletions(w, r)
++}
++
++func (h *Handler) scopedModels(w http.ResponseWriter, r *http.Request) {
++	rule, err := parseAccountScope(r, h.cfg.APIKey)
++	if err != nil || rule == nil {
++		writeOpenAIError(w, http.StatusForbidden, "invalid_account_scope", "valid account scope is required")
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": h.modelListScoped(rule)})
++}
++
++func (h *Handler) fetchScopedCNModels(rule *accountScope) []upstream.ModelInfo {
++	if rule == nil {
++		return h.fetchDynamicModels()
++	}
++	account := h.cfg.Pool.PickExcludingForRealm(h.scopedExclusions(rule, nil), "", "cn")
++	if !rule.permits(account) {
++		return nil
++	}
++	// The unrestricted cache may describe another account's capabilities.
++	models, err := h.cfg.Upstream.FetchModels(account)
++	if err != nil {
++		return nil
++	}
++	return models
++}
++
++func (h *Handler) fetchScopedGlobalModels(rule *accountScope) ([]string, *auth.Auth) {
++	if rule == nil {
++		return h.fetchGlobalModels()
++	}
++	account := h.cfg.Pool.PickExcludingForRealm(h.scopedExclusions(rule, nil), "", "global")
++	if !rule.permits(account) {
++		return nil, nil
++	}
++	return h.cfg.Upstream.FetchGlobalModels(account), account
++}
+diff --git a/internal/server/account_scope_test.go b/internal/server/account_scope_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/server/account_scope_test.go
+@@ -0,0 +1,137 @@
++package server
++
++import (
++	"crypto/hmac"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++	"workbuddy2api/internal/auth"
++	"workbuddy2api/internal/session"
++)
++
++func signedScopeRequest(key string, allow, deny []string) *http.Request {
++	r := httptest.NewRequest("POST", "/v1/scoped/chat/completions", strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[],"metadata":{"conversation_id":"shared"}}`))
++	r.Header.Set("Authorization", "Bearer manager-secret")
++	raw, _ := json.Marshal(accountScope{Version: 1, Key: key, Issued: time.Now().Unix(), Allow: allow, Deny: deny})
++	value := base64.RawURLEncoding.EncodeToString(raw)
++	mac := hmac.New(sha256.New, []byte("manager-secret"))
++	mac.Write([]byte(value))
++	r.Header.Set("X-WB-Account-Scope", value)
++	r.Header.Set("X-WB-Account-Scope-Signature", hex.EncodeToString(mac.Sum(nil)))
++	return r
++}
++func TestAccountScopeSignatureAndEmptySelection(t *testing.T) {
++	r := signedScopeRequest("key", []string{"cn:a"}, nil)
++	rule, err := parseAccountScope(r, "manager-secret")
++	if err != nil || !rule.permitsID("cn", "a") || rule.permitsID("global", "a") || rule.permitsID("cn", "b") {
++		t.Fatalf("invalid scope %v %v", rule, err)
++	}
++	r.Header.Set("X-WB-Account-Scope-Signature", "invalid")
++	if _, err := parseAccountScope(r, "manager-secret"); err == nil {
++		t.Fatal("forged scope accepted")
++	}
++	rule, err = parseAccountScope(signedScopeRequest("key", []string{}, nil), "manager-secret")
++	if err != nil || rule.permitsID("cn", "a") {
++		t.Fatal("empty allowlist became public")
++	}
++	rule, err = parseAccountScope(signedScopeRequest("key", nil, []string{"cn:a"}), "manager-secret")
++	if err != nil || rule.permitsID("cn", "a") || !rule.permitsID("cn", "b") {
++		t.Fatal("denylist ignored")
++	}
++}
++func TestAccountScopeRequiredOnDedicatedRoutes(t *testing.T) {
++	h := NewHandler(Config{APIKey: "manager-secret"})
++	for _, path := range []string{"/v1/scoped/chat/completions", "/v1/scoped/models"} {
++		r := signedScopeRequest("key", nil, nil)
++		r.URL.Path = path
++		r.Header.Del("X-WB-Account-Scope")
++		if strings.HasSuffix(path, "models") {
++			r.Method = "GET"
++		}
++		w := httptest.NewRecorder()
++		h.ServeHTTP(w, r)
++		if w.Code != 403 {
++			t.Fatalf("%s missing scope: %d", path, w.Code)
++		}
++	}
++}
++func TestAccountScopeStickyLargeRequestAndChangedPermissions(t *testing.T) {
++	p := testPoolWith(&auth.Auth{UID: "a", AccessToken: "at-a", ExpiresAt: 9999999999}, &auth.Auth{UID: "b", AccessToken: "at-b", ExpiresAt: 9999999999})
++	sess := session.New(session.Config{TTL: time.Minute, Available: func() []string { return []string{"a", "b"} }})
++	sess.Bind("shared", "b")
++	var calls []string
++	up := newFakeUpstream(t, func(token string) (int, string, bool) { calls = append(calls, token); return 200, sseOK, true })
++	h := NewHandler(Config{Pool: p, Upstream: up, APIKey: "manager-secret", Session: sess, LargeRequestBytes: 1, LargeRequestBudget: 1, LargeRequestBudgetWindow: time.Minute})
++	for i := 0; i < 3; i++ {
++		w := httptest.NewRecorder()
++		h.ServeHTTP(w, signedScopeRequest("key", []string{"cn:a"}, nil))
++		if w.Code != 200 {
++			t.Fatalf("%d %s", w.Code, w.Body)
++		}
++	}
++	if len(calls) != 3 {
++		t.Fatalf("calls %v", calls)
++	}
++	for _, token := range calls {
++		if token != "Bearer at-a" {
++			t.Fatalf("scope leaked: %v", calls)
++		}
++	}
++	w := httptest.NewRecorder()
++	h.ServeHTTP(w, signedScopeRequest("key", []string{"cn:b"}, nil))
++	if w.Code != 200 || calls[len(calls)-1] != "Bearer at-b" {
++		t.Fatal("stale sticky binding survived permission change")
++	}
++}
++func TestAccountScopeRetryNeverFallsBackOutsideSelection(t *testing.T) {
++	p := testPoolWith(&auth.Auth{UID: "bad", AccessToken: "at-bad", ExpiresAt: 9999999999}, &auth.Auth{UID: "good", AccessToken: "at-good", ExpiresAt: 9999999999})
++	var calls []string
++	up := newFakeUpstream(t, func(token string) (int, string, bool) {
++		calls = append(calls, token)
++		if token == "Bearer at-bad" {
++			return 500, `{"code":500}`, false
++		}
++		return 200, sseOK, true
++	})
++	h := NewHandler(Config{Pool: p, Upstream: up, APIKey: "manager-secret"})
++	w := httptest.NewRecorder()
++	h.ServeHTTP(w, signedScopeRequest("key", []string{"cn:bad"}, nil))
++	if w.Code == 200 || len(calls) == 0 {
++		t.Fatalf("wrong retry behavior %d %v", w.Code, calls)
++	}
++	for _, token := range calls {
++		if token != "Bearer at-bad" {
++			t.Fatalf("retry leaked: %v", calls)
++		}
++	}
++}
++func TestAccountScopeDeniedModelListingDoesNotProbePrivateAccount(t *testing.T) {
++	p := testPoolWith(&auth.Auth{UID: "a", AccessToken: "at-a", ExpiresAt: 9999999999})
++	calls := 0
++	up := newFakeUpstream(t, func(token string) (int, string, bool) { calls++; return 200, `{}`, false })
++	h := NewHandler(Config{Pool: p, Upstream: up, APIKey: "manager-secret"})
++	r := signedScopeRequest("key", nil, []string{"cn:a"})
++	r.Method = "GET"
++	r.URL.Path = "/v1/scoped/models"
++	w := httptest.NewRecorder()
++	h.ServeHTTP(w, r)
++	if w.Code != 200 || calls != 0 {
++		t.Fatalf("private model probe: %d calls %d", w.Code, calls)
++	}
++}
++
++func TestAccountScopeIdentitySurvivesGlobalEscapeHatch(t *testing.T) {
++	auth.SetGlobalEnabled(false)
++	defer auth.SetGlobalEnabled(true)
++	account := &auth.Auth{UID: "global-a", Domain: "www.workbuddy.ai"}
++	rule, err := parseAccountScope(signedScopeRequest("public", nil, []string{"global:global-a"}), "manager-secret")
++	if err != nil || account.Realm() != "cn" || rule.permits(account) {
++		t.Fatal("routing toggle released a dedicated account")
++	}
++}
