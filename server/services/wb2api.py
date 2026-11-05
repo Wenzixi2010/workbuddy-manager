@@ -1509,6 +1509,20 @@ async def restart_container(container: str | None = None) -> tuple[bool, str]:
     return await _docker_restart(config.WB2API_CONTAINER)
 
 
+def _docker_restart_error(message: str) -> str:
+    """Keep the daemon error, but explain the socket + group requirements to the operator."""
+    text = message.lower()
+    if 'permission denied' in text and ('docker.sock' in text or 'docker daemon' in text):
+        return (message + '\nDocker socket 权限不足：请在宿主机执行 '
+                "stat -c '%g' /var/run/docker.sock，将结果设置为 Compose 的 DOCKER_GID，"
+                '并在管理端服务配置 group_add。修改后需重建管理端容器；仅 restart 不会应用挂载或组权限。')
+    if 'cannot connect to the docker daemon' in text or ('docker.sock' in text and 'no such file' in text):
+        return (message + '\n请先在宿主机执行 docker info 确认 Docker 正常。若宿主机正常，'
+                '请给管理端服务同时配置 /var/run/docker.sock 挂载和 group_add（宿主 socket 的实际 GID），'
+                '然后重建管理端容器。Docker socket 具有宿主机高权限，仅在可信部署中启用。')
+    return message
+
+
 async def _docker_restart(name: str) -> tuple[bool, str]:
     """`docker restart <name>`。抽出来是因为「默认上游」与「分组」都要用它。"""
     try:
@@ -1520,7 +1534,8 @@ async def _docker_restart(name: str) -> tuple[bool, str]:
         _, err = await proc.communicate()
         if proc.returncode == 0:
             return True, f'容器 {name} 已重启'
-        return False, (err.decode(errors='ignore').strip() or f'docker 退出码 {proc.returncode}')
+        message = err.decode(errors='ignore').strip() or f'docker 退出码 {proc.returncode}'
+        return False, _docker_restart_error(message)
     except FileNotFoundError:
         return False, _NO_DOCKER_HINT
     except Exception as exc:  # noqa: BLE001

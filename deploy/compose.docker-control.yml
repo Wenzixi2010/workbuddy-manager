@@ -1,0 +1,8 @@
+# Optional overlay; merge with the existing Compose file, never use on its own.
+# Grants the manager host-level Docker control. Enable only on trusted deployments.
+services:
+  workbuddy-manager:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:?Set DOCKER_GID to the host Docker socket GID}"

@@ -1867,6 +1867,9 @@ export interface AccountImportResult {
 }
 
 export interface LegacyMigrationResult {
+  format?: 'native';
+  requires_overwrite?: boolean;
+  restored_groups?: number[];
   preview: boolean;
   counts: {accounts: number; valid_accounts: number; new_accounts: number; keys: number;
     valid_keys: number; new_keys: number; logs: number};

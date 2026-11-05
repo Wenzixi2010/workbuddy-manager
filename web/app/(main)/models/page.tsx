@@ -8,6 +8,7 @@ import {
   Layers,
   Loader2,
   Maximize2,
+  Play,
   RefreshCw,
   Search,
 } from 'lucide-react';
@@ -29,7 +30,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {modelApi} from '@/lib/api';
+import {modelApi, errText} from '@/lib/api';
+import {useAuth} from '@/lib/auth-context';
+import {MODEL_TEST_PROMPT, type ModelTestResult} from '@/lib/model-test';
+import {Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/animate-ui/radix/dialog';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {useRealm} from '@/lib/realm-context';
 import {notify} from '@/lib/toast';
@@ -117,6 +121,49 @@ function sourceLabel(source: string, fallback: string, t: (key: string) => strin
 export default function ModelsPage() {
   const t = useT();
   const {realm, label: realmName} = useRealm();
+  const {isAdmin} = useAuth();
+  const testAbort = useRef<AbortController | null>(null);
+  const [testState, setTestState] = useState<{
+    model: CatalogModel;
+    realm: string;
+    result?: ModelTestResult;
+    error?: string;
+    elapsedMs?: number;
+  } | null>(null);
+  const testing = !!testState && !testState.result && !testState.error;
+
+  const closeTest = useCallback(() => {
+    testAbort.current?.abort();
+    testAbort.current = null;
+    setTestState(null);
+  }, []);
+
+  // Never display a previous realm's late response in the new realm or after unmount.
+  useEffect(() => {
+    closeTest();
+    return () => { testAbort.current?.abort(); testAbort.current = null; };
+  }, [realm, closeTest]);
+
+  const runTest = async (model: CatalogModel) => {
+    // A ref prevents a double click from consuming credits twice before React renders.
+    if (!isAdmin || testAbort.current) return;
+    const ac = new AbortController();
+    testAbort.current = ac;
+    const started = performance.now();
+    setTestState({model, realm: realmName});
+    try {
+      const result = await modelApi.test(model.id, realm, ac.signal);
+      if (testAbort.current !== ac) return;
+      setTestState({model, realm: realmName, result, elapsedMs: Math.round(performance.now() - started)});
+    } catch (error) {
+      if (testAbort.current !== ac) return;
+      const message = error instanceof Error && error.message.startsWith('models.test')
+        ? t(error.message) : errText(error);
+      setTestState({model, realm: realmName, error: message, elapsedMs: Math.round(performance.now() - started)});
+    } finally {
+      if (testAbort.current === ac) testAbort.current = null;
+    }
+  };
 
   const [q, setQ] = useState('');
   const [series, setSeries] = useState('all');
@@ -430,7 +477,8 @@ export default function ModelsPage() {
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colContext')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colMaxOutput')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colEfforts')}</TableHead>
-                    <TableHead className="pr-4 text-[11px] text-muted-foreground">{t('models.series')}</TableHead>
+                    <TableHead className="text-[11px] text-muted-foreground">{t('models.series')}</TableHead>
+                    {isAdmin && <TableHead className="pr-4 text-right text-[11px] text-muted-foreground">{t('models.test')}</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -515,6 +563,18 @@ export default function ModelsPage() {
                           <SeriesBadge series={m.series} />
                         </div>
                       </TableCell>
+                      {isAdmin && (
+                        <TableCell className="pr-4 text-right">
+                          <Button size="sm" variant="outline" disabled={testing}
+                            title={t('models.testHint')}
+                            aria-label={t('models.testModel', {model: m.name || m.id})}
+                            onClick={() => { void runTest(m); }}>
+                            {testing && testState?.model.id === m.id
+                              ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                            {t('models.test')}
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -528,6 +588,48 @@ export default function ModelsPage() {
           </>
         )}
       </section>
+
+      <Dialog open={!!testState} onOpenChange={(open) => { if (!open) closeTest(); }}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t('models.testTitle')}</DialogTitle>
+            <DialogDescription>{t('models.testHint')}</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <div className="space-y-4 px-6 pb-2">
+              <div className="text-sm font-medium">{testState?.model.name || testState?.model.id}</div>
+              <div className="break-all font-mono text-xs text-muted-foreground">{testState?.realm} · {testState?.model.id}</div>
+              <div className="rounded-xl bg-muted p-3 text-sm">
+                <p className="mb-1 text-xs text-muted-foreground">{t('models.testPrompt')}</p>
+                <p className="font-mono">{MODEL_TEST_PROMPT}</p>
+              </div>
+              {testing && <div role="status" className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />{t('models.testSending')}
+              </div>}
+              {testState?.error && <div role="alert" className="rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
+                <p className="mb-1 font-medium">{t('models.testFailed')}</p>
+                <p className="whitespace-pre-wrap break-words">{testState.error}</p>
+              </div>}
+              {testState?.result && <div className="space-y-3">
+                <p role="status" className="text-sm font-medium text-emerald-600 dark:text-emerald-400">{t('models.testSuccess')}</p>
+                {testState.result.content && <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted p-3 font-sans text-sm">{testState.result.content}</pre>}
+                {testState.result.reasoning && <details open={!testState.result.content} className="text-sm text-muted-foreground">
+                  <summary className="cursor-pointer">{t('models.testReasoning')}</summary>
+                  <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words font-sans text-xs">{testState.result.reasoning}</pre>
+                </details>}
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  {testState.result.tokens !== null && <span>Tokens: {testState.result.tokens}</span>}
+                  {testState.result.credit !== null && <span>{t('models.testCredit', {n: testState.result.credit})}</span>}
+                </div>
+              </div>}
+              {testState?.elapsedMs !== undefined && <p className="text-xs text-muted-foreground">{t('models.testElapsed', {n: (testState.elapsedMs / 1000).toFixed(2)})}</p>}
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeTest}>{t(testing ? 'models.testCancel' : 'models.testClose')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 失败原因：默认收起，供排查（例如某个账号凭证过期） */}
       {!!data?.errors?.length && (

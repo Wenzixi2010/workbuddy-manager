@@ -1,5 +1,6 @@
 import axios, {AxiosError} from 'axios';
 import {BASE_PATH} from './base-path';
+import {modelTestRequest, parseModelTestResponse} from './model-test';
 import {t, tp} from './i18n';
 import type {Realm} from './realm-context';
 import type {
@@ -111,9 +112,10 @@ export const http = axios.create({
  * 偏偏在这条路径上漏出英文，而且对用户没有任何指导意义。
  */
 export function errText(e: unknown): string {
-  const ax = e as AxiosError<{detail?: string; error?: string}>;
+  const ax = e as AxiosError<{detail?: string; error?: string | {message?: string}}>;
   const d = ax?.response?.data;
-  const raw = (typeof d === 'string' ? d : d?.detail || d?.error) || '';
+  const upstreamError = typeof d?.error === 'string' ? d.error : d?.error?.message;
+  const raw = (typeof d === 'string' ? d : d?.detail || upstreamError) || '';
   if (raw) return tp(raw);
   if (ax?.response?.status === 403) return t('error.forbidden');
   const fallback = ax?.message || '';
@@ -459,6 +461,13 @@ export const modelApi = {
   /** 指定版本的模型目录；force=true 绕过 5 分钟缓存 */
   catalog: (realm: Realm = 'cn', force = false) =>
     get<ModelCatalog>('/api/model-catalog', {realm, force}),
+  /** Fixed Ciallo prompt; authenticated cookies and deployment base path come from http. */
+  test: async (model: string, realm: Realm, signal?: AbortSignal) => {
+    const response = await http.post<unknown>('/api/playground/chat', modelTestRequest(model, realm), {
+      timeout: 180000, signal,
+    });
+    return parseModelTestResponse(response.data);
+  },
 };
 
 /* ── 聊天测试台 ─────────────────────────────────────── */
@@ -881,6 +890,12 @@ export const pgSyncApi = {
 };
 
 export const migrationApi = {
+  /** Prepare a consistent snapshot, then use native browser download (no large Blob). */
+  exportSqlite: async () => (await http.post<{ticket: string; filename: string; expires_in: number}>(
+    '/api/migration/sqlite/export', undefined, {timeout: 150000},
+  )).data,
+  sqliteDownloadUrl: (ticket: string) => `${BASE_PATH}/api/migration/sqlite/export/${encodeURIComponent(ticket)}`,
+
   sqlite: async (file: File, options: {preview: boolean; overwrite: boolean; includeLogs: boolean; upstreamId: number | null}) => {
     const body = new FormData();
     body.append('file', file, file.name);

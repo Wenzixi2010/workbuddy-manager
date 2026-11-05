@@ -21,7 +21,7 @@ import time
 from typing import BinaryIO
 
 from .. import config, db, keysvc
-from . import accountaccess, accountimport, tencent, wb2api
+from . import accountaccess, accountimport, nativebackup, tencent, wb2api
 from .filelock import file_lock
 
 _lock = threading.Lock()
@@ -108,6 +108,11 @@ def _read_source(payload: bytes | BinaryIO, include_logs: bool):
             conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4 * 1024 * 1024) if hasattr(conn, 'setlimit') else None
             tables = {r['name']: r['sql'] or '' for r in conn.execute(
                 "SELECT name,sql FROM sqlite_master WHERE type='table'")}
+            if nativebackup.MANIFEST in tables:
+                if conn.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                    raise MigrationError('SQLite 恢复备份不完整，请重新导出')
+                yield {'native_conn': conn}
+                return
             if 'accounts' not in tables or 'api_keys' not in tables:
                 raise MigrationError('不是受支持的旧版数据库：需要 accounts 和 api_keys 表')
             if conn.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
@@ -227,6 +232,14 @@ def _restore(path: Path, payload: bytes | None) -> None:
 
 def migrate(payload: bytes | BinaryIO, group: dict, *, preview: bool, include_logs: bool, overwrite: bool) -> dict:
     with _read_source(payload, include_logs) as data:
+        if 'native_conn' in data:
+            try:
+                return nativebackup.restore(data['native_conn'], group, preview=preview,
+                                            include_logs=include_logs, overwrite=overwrite)
+            except nativebackup.BackupError as exc:
+                raise MigrationError(str(exc)) from None
+            except OSError:
+                raise MigrationError('恢复未完成，请检查账号目录权限与磁盘空间；保留事前备份并核对当前数据') from None
         return _migrate_data(data, group, preview=preview, overwrite=overwrite)
 
 
