@@ -189,7 +189,7 @@ def _parse(row) -> dict:
         'expires_at': row['expires_at'],
         'max_ips': row['max_ips'],
         'ip_allowlist': _json_list(row['ip_allowlist']),
-        'models': (group['models'] if group and group['models'] else ['invalid:model-group']) if gid else _json_list(row['models']),
+        'models': (group['models'] if group and group['models'] else ['invalid:model-group']) if gid else [],
         'model_group_id': gid,
         'model_group_name': group['name'] if group else None,
         'model_group_realm': group['realm'] if group else '',
@@ -290,7 +290,7 @@ def create_key(
         expires_at,
         max_ips,
         json.dumps(_norm_cidrs(ip_allowlist)),
-        json.dumps(models or []),
+        '[]',  # Model permissions come only from an explicitly chosen group.
         _norm_realm(realm),
         quota,
         _norm_credit_quota(quota_credit),
@@ -377,7 +377,7 @@ def update_key(key_id: int, patch: dict) -> dict | None:
         # 与创建同一条归一化路径：校验与存储必须是同一份数据（见 _norm_cidrs）
         fields['ip_allowlist'] = json.dumps(_norm_cidrs(patch['ip_allowlist']))
     if 'models' in patch:
-        fields['models'] = json.dumps(patch['models'] or [])
+        fields['models'] = '[]'  # Legacy per-Key input no longer adds hidden limits.
     if 'model_group_id' in patch:
         fields['model_group_id'] = patch['model_group_id'] or None
         fields['models'] = '[]'

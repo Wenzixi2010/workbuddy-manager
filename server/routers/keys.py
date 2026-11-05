@@ -165,7 +165,7 @@ def create_key(body: KeyIn, request: Request,
             expires_at=body.expires_at,
             max_ips=body.max_ips,
             ip_allowlist=body.ip_allowlist,
-            models=[] if body.model_group_id else body.models,
+            models=[],  # No group means no model whitelist.
             quota=body.quota,
             realm=body.realm,
             quota_credit=body.quota_credit,

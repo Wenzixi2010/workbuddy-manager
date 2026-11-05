@@ -256,7 +256,8 @@ def restore(source: sqlite3.Connection, group: dict, *, preview: bool, include_l
               'warnings': ['这是当前管理端恢复备份：确认后替换账号、Key、权限、备注、用量及所选日志，不是旧版合并导入。',
                            '恢复前请停止相关上游容器和后台任务，避免旧凭据被并发回写；恢复后由宿主机启动上游。',
                            '保留本机管理员、管理 API Token、审计日志、上游地址/目录、环境配置及更新配置；恢复业务模型/任务计划和代理池设置。',
-                           '账号权限里已删除的 Key 会保留为拒绝占位，不释放成公共账号，也不会授权给未来复用编号的新 Key。'],
+                           '账号权限里已删除的 Key 会保留为拒绝占位，不释放成公共账号，也不会授权给未来复用编号的新 Key。',
+                           '只恢复备份中明确存在的模型分组关联；未选分组的 Key 允许全部模型，不自动为旧白名单创建分组。'],
               'added_accounts': 0, 'updated_accounts': 0, 'added_keys': 0, 'skipped_accounts': 0,
               'skipped_keys': 0, 'imported_logs': 0, 'skipped_logs': 0,
               'restored_groups': [int(g['id'] or 0) for g in plan['groups'].values()]}
@@ -326,7 +327,6 @@ def restore(source: sqlite3.Connection, group: dict, *, preview: bool, include_l
                 conn.execute(f'DELETE FROM settings WHERE key IN ({placeholders})', SETTING_KEYS)
                 conn.executemany('INSERT INTO settings(key,value) VALUES(?,?)',
                                  source.execute(f'SELECT key,value FROM settings WHERE key IN ({placeholders})', SETTING_KEYS))
-                db.convert_key_models_to_groups(conn)
                 for path in sorted(paths):
                     _replace_file(path, incoming.get(path))
                 conn.commit()

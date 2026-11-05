@@ -142,7 +142,8 @@ def _read_source(payload: bytes | BinaryIO, include_logs: bool):
 
 
 def _plan(data: dict) -> tuple[list[dict], list[dict], list[str]]:
-    warnings = ['旧版管理员、系统设置、定时任务、运行时冷却和积分余额快照不迁移；迁移后请重新配置并刷新余额。']
+    warnings = ['旧版管理员、系统设置、定时任务、运行时冷却和积分余额快照不迁移；迁移后请重新配置并刷新余额。',
+                '旧版 Key 的模型白名单不自动生成模型分组：未选分组允许全部模型，请按需手动创建并选择分组。']
     accounts = []
     account_map = {}
     unique_accounts = {}
@@ -330,7 +331,6 @@ def _migrate_data(data: dict, group: dict, *, preview: bool, overwrite: bool) ->
                     conn.execute('INSERT OR IGNORE INTO account_key_access(auth_dir,account_id,key_ids) VALUES(?,?,?)',
                                  (accountaccess.directory(group), aid, json.dumps(owners)))
                 _import_logs(conn, data, accounts, key_map, result)
-                db.convert_key_models_to_groups(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
