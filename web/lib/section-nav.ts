@@ -54,6 +54,7 @@ export type SectionNavIconKey =
   | 'accounts'
   | 'migration'
   | 'tasks'
+  | 'modelGroups'
   | 'keys'
   | 'redPackets'
   | 'models'
@@ -89,6 +90,7 @@ export const SECTION_NAV: Record<SectionKey, readonly SectionNavItem[]> = {
   ],
   keys: [
     {key: 'keys', href: '/keys', labelKey: 'nav.keys', iconKey: 'keys'},
+    {key: 'modelGroups', href: '/model-groups', labelKey: 'modelGroups.title', iconKey: 'modelGroups'},
     {key: 'redPackets', href: '/red-packets', labelKey: 'nav.redPackets', iconKey: 'redPackets'},
   ],
   models: [

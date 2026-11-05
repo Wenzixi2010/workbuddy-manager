@@ -5,9 +5,9 @@ import {KeyRound, Plus, Trash2, Ban, CircleCheck, Pencil, RotateCcw, Eye, Loader
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {notify} from '@/lib/toast';
-import {keyApi, upstreamsApi, errText} from '@/lib/api';
+import {keyApi, modelGroupsApi, upstreamsApi, errText} from '@/lib/api';
 import {BASE_PATH} from '@/lib/base-path';
-import type {ApiKey, KeyImportResult, KeyImportStatus, UpstreamEndpoint} from '@/lib/types';
+import type {ApiKey, KeyImportResult, KeyImportStatus, UpstreamEndpoint, ModelGroup} from '@/lib/types';
 import {fmtDateTime, fmtNumber} from '@/lib/format';
 import {PageHeader} from '@/components/common/layout/PageHeader';
 import {PageSectionTabs} from '@/components/common/layout/PageSectionTabs';
@@ -15,14 +15,13 @@ import {EmptyState} from '@/components/common/layout/EmptyState';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
 import {KeyAccountSelector} from '@/components/common/keys/KeyAccountSelector';
 import {KeyAccountScopeCell} from '@/components/common/keys/KeyAccountScopeCell';
-import {ModelWhitelistInput} from '@/components/common/keys/ModelWhitelistInput';
+import Link from 'next/link';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {useAuth} from '@/lib/auth-context';
 import {useRealm, type Realm} from '@/lib/realm-context';
 import {Button} from '@/components/ui/button';
 import {CopyButton} from '@/components/ui/copy-button';
-import {RichText} from '@/lib/i18n/rich-text';
 import {useT} from '@/lib/i18n/provider';
 import {Badge} from '@/components/ui/badge';
 import {Input} from '@/components/ui/input';
@@ -67,7 +66,7 @@ interface FormState {
   expiryMode: 'keep' | 'days' | 'never';
   maxIps: string;
   ipAllowlist: string;
-  models: string;
+  model_group_id: number | null;
   quota: string;
   /** 积分额度（issue #27）：0 = 不限。按上游返回的**真实扣费**累计 */
   quotaCredit: string;
@@ -87,7 +86,7 @@ const emptyForm: FormState = {
   expiresDays: '0',
   maxIps: '0',
   ipAllowlist: '',
-  models: '',
+  model_group_id: null,
   quota: '0',
   quotaCredit: '0',
   realm: 'cn',
@@ -107,6 +106,7 @@ function toLines(v: string): string[] {
  */
 const EMPTY_KEYS: ApiKey[] = [];
 const EMPTY_UPSTREAMS: UpstreamEndpoint[] = [];
+const EMPTY_MODEL_GROUPS: ModelGroup[] = [];
 
 export default function KeysPage() {
   const t = useT();
@@ -124,8 +124,10 @@ export default function KeysPage() {
   const {values, errors, isInitialLoading, isInitialFailed, isRefreshing, reload} = useAsyncAll({
     keys: () => keyApi.list(),
     upstreams: () => upstreamsApi.list(),
+    modelGroups: () => modelGroupsApi.list(),
   }, []);
 
+  const modelGroups = values.modelGroups ?? EMPTY_MODEL_GROUPS;
   const keys: ApiKey[] = values.keys ?? EMPTY_KEYS;
   const upstreams: UpstreamEndpoint[] = values.upstreams?.items ?? EMPTY_UPSTREAMS;
   /**
@@ -195,35 +197,7 @@ export default function KeysPage() {
    * `null` = 还没查/查不了（拿不到模型清单）。**不能**把 null 当成「都没问题」——
    * 那会把「暂时查不了」显示成「全部正确」。
    */
-  const [unknownModels, setUnknownModels] = useState<string[] | null>(null);
-  /**
-   * 提示元素的 ref：它出现时要**滚进可视区**。
-   *
-   * 为什么需要：模型白名单是弹窗里最后一个字段，提示挂在它下面——实测在
-   * 常见窗口高度下，提示会落在弹窗内容区的**可视区之下**（被滚动容器裁掉），
-   * 用户看不到任何东西。而这条提示的全部价值就是「当场看见」，看不见等于没做。
-   * 用 `block:'nearest'`：只在需要时滚最小距离，不会把界面拽跑。
-   */
-  const unknownRef = useRef<HTMLParagraphElement | null>(null);
-  /**
-   * 提交锁（同步生效，与 `busy` 的渲染状态无关）。
-   *
-   * 为什么状态不够：`setBusy(true)` 要等下一次渲染才反映到按钮的 disabled 上，
-   * 而快速连点/回车触发的第二次提交可能在那之前就进来了 —— 结果创建出**多把
-   * 同名密钥**（实测：连点 3 次进 3 把）。用 ref 记录「已提交」，在当前这次
-   * 调用栈里立即生效，不依赖渲染。
-   *
-   * 另外这把锁在 `finally` 里释放，失败（比如接口 500）时用户可以重试 ——
-   * 不能因为一次报错就把表单永久锁死。
-   */
   const submitting = useRef(false);
-
-  // 提示出现时确保它在可视区内（见 unknownRef 的说明）
-  useEffect(() => {
-    if (unknownModels && unknownModels.length) {
-      unknownRef.current?.scrollIntoView({block: 'nearest'});
-    }
-  }, [unknownModels]);
 
   // 密钥状态可能被下游调用改变（配额用尽、过期），心跳刷新保持同步。
   // 走 reload（刷新模式）：只把新数据换上去，**不**重走首屏流程——否则骨架会每
@@ -240,7 +214,6 @@ export default function KeysPage() {
     setEditing(null);
     // 新建时默认跟随当前所在版本：在哪个版本的界面里建，就是哪个版本的密钥
     setForm({...emptyForm, realm});
-    setUnknownModels(null);
     setFormOpen(true);
   }
 
@@ -257,13 +230,12 @@ export default function KeysPage() {
       expiresDays: '0',
       maxIps: String(k.max_ips || 0),
       ipAllowlist: (k.ip_allowlist || []).join('\n'),
-      models: (k.models || []).join(', '),
+      model_group_id: k.model_group_id ?? null,
       quota: String(k.quota ?? 0),
       quotaCredit: String(k.quota_credit ?? 0),
       realm: k.realm || '',
       upstream_id: k.upstream_id ?? null,
     });
-    setUnknownModels(null);
     setFormOpen(true);
   }
 
@@ -287,7 +259,7 @@ export default function KeysPage() {
         name: form.name.trim(),
         max_ips: Number(form.maxIps) || 0,
         ip_allowlist: toLines(form.ipAllowlist),
-        models: toLines(form.models),
+        model_group_id: form.model_group_id,
         quota: Number(form.quota) || 0,
         quota_credit: Number(form.quotaCredit) || 0,
         // '' 是有意义的取值（不限制版本），必须照传——后端以它区分
@@ -298,7 +270,7 @@ export default function KeysPage() {
         // 会与界面上显示的不一致——那种错是静默的，只有调用时才暴露。
         // 例外是用户在新建弹窗里显式打开了「不限制」（form.realm === ''，
         // issue #191）：那是明确的意图，不能被页面版本覆盖掉。
-        realm: editing || form.realm === '' ? form.realm : realm,
+        realm: modelGroups.find(g => g.id === form.model_group_id)?.realm || (editing || form.realm === '' ? form.realm : realm),
         // 绑定上游（多上游 / 分组隔离）：null = 默认上游，照传——
         // 后端以它区分「显式改回默认上游」与「本次没提交该字段」（PATCH 语义）。
         upstream_id: form.upstream_id,
@@ -403,12 +375,12 @@ export default function KeysPage() {
     if (!issued) return null;
     const app = exportTarget === 'zcode' ? undefined
       : (exportTarget === 'ccswitch-codex' ? 'codex' : 'claude');
-    const models = form.models.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+    const models = modelGroups.find(g => g.id === form.model_group_id)?.models ?? [];
     return exportTarget === 'zcode'
       ? {client: 'zcode' as const, token: issued, baseUrl, models}
       : {client: 'ccswitch' as const, app: app as 'claude' | 'codex',
          token: issued, baseUrl, models};
-  }, [issued, exportTarget, baseUrl, form.models]);
+  }, [issued, exportTarget, baseUrl, form.model_group_id, modelGroups]);
 
   /** 当前目标客户端名。导出、导入、自动检测三处都要用，抽出来免得各写一遍。 */
   const importClient: 'ccswitch' | 'zcode' =
@@ -622,7 +594,6 @@ export default function KeysPage() {
         </TabsList>
       </Tabs>
 
-      <p className="text-xs leading-5 text-muted-foreground">{t('keys.scopePermissionHint')}</p>
       <section className="overflow-hidden rounded-[20px] bg-muted">
         <Table>
           <TableHeader>
@@ -632,10 +603,8 @@ export default function KeysPage() {
               <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
               {/* 版本列紧跟状态：它和状态一样是「这把密钥的属性」，位置与账号页的列序一致 */}
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.realm')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('keys.colBoundAccounts')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground" title={t('keys.scopePermissionHint')}>{t('keys.colUsableAccounts')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.expiry')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('keys.colIpModels')}</TableHead>
+              <TableHead className="text-[11px] text-muted-foreground">{t('modelGroups.colIp')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.colUsedTokens')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.colLastUsed')}</TableHead>
               {isAdmin && <TableHead className="pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
@@ -653,6 +622,12 @@ export default function KeysPage() {
                 <TableRow key={k.id} className="border-b border-border/40">
                   <TableCell className="pl-4 text-sm font-medium">
                     <div>{k.name}</div>
+                    {!!k.model_group_id && <Badge variant="secondary" className="mt-1 text-[10px]">
+                      {t('modelGroups.groupTag', {name: k.model_group_name || `#${k.model_group_id}`})}
+                    </Badge>}
+                    {k.bind_mode === 'exclusive' && !!k.account_ids?.length && <div className="mt-1 text-xs">
+                      <KeyAccountScopeCell apiKey={k} kind="bound" />
+                    </div>}
                     {/* 只标「绑定了上游」的行：默认上游是绝大多数，每行都标等于没标，
                         有值才说明这把钥匙走的是另一个账号池（见 server/upstreamsvc.py） */}
                     {k.upstream_id ? (
@@ -694,16 +669,11 @@ export default function KeysPage() {
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="align-top"><KeyAccountScopeCell apiKey={k} kind="bound" /></TableCell>
-                  <TableCell className="align-top"><KeyAccountScopeCell apiKey={k} kind="usable" /></TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {k.expires_at ? fmtDateTime(k.expires_at) : t('keys.neverExpires')}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {k.max_ips ? t('keys.ipLimit', {n: k.max_ips}) : t('keys.ipUnlimited')} /{' '}
-                    {k.models?.length
-                      ? t('keys.modelsCount', {count: k.models.length, n: k.models.length})
-                      : t('keys.modelsAll')}
+                    {k.max_ips ? t('keys.ipLimit', {n: k.max_ips}) : t('keys.ipUnlimited')}
                   </TableCell>
                   <TableCell className="text-xs tabular-nums">
                     {(() => {
@@ -1077,52 +1047,19 @@ export default function KeysPage() {
                 onChange={ids => setForm(old => ({...old, account_ids: ids}))}
                 onModeChange={mode => setForm(old => ({...old, bind_mode: mode}))} />}
               <div className="space-y-1.5">
-                <Label className="text-[11px] text-muted-foreground">{t('keys.modelWhitelist')}</Label>
-                {/* 手输保留（清单里暂时没有的模型仍要能填），旁边给「从清单选择」：
-                    候选按版本分组，勾选即加入 —— 记不住名字、写错了等调用失败才发现的日子结束。 */}
-                <ModelWhitelistInput
-                  value={form.models}
-                  realm={form.realm}
-                  placeholder="glm-5.2, global:gpt-5.4"
-                  onChange={(next) => {
-                    setForm({...form, models: next});
-                    // 改了内容就作废上次结论，避免显示过期的「都对」
-                    setUnknownModels(null);
-                  }}
-                  // 还在打字（草稿未提交）时同样要作废：否则改到一半就切走视线，
-                  // 看到的仍是上一版的结论（见组件里 onEdit 的说明）
-                  onEdit={() => setUnknownModels(null)}
-                  // 离开输入框时查一次：不在每次按键时打接口（那是逐字请求），
-                  // 但要早于提交——提交时才发现就得重填一遍
-                  onBlur={async (next) => {
-                    // 用组件交回来的新值校验：此时 form.models 还没更新，读它会漏掉刚输入的模型。
-                    const names = toLines(next);
-                    if (!names.length) {
-                      setUnknownModels([]);
-                      return;
-                    }
-                    try {
-                      const r = await keyApi.checkModels(names, form.realm || '');
-                      setUnknownModels(r.checked ? r.unknown : null);
-                    } catch {
-                      setUnknownModels(null);   // 查不了就不显示，不编造
-                    }
-                  }}
-                />
-                {unknownModels !== null && unknownModels.length > 0 && (
-                  <p ref={unknownRef}
-                     className="text-[10px] leading-4 text-amber-600 dark:text-amber-400">
-                    {t('keys.modelsUnknown', {names: unknownModels.join(t('common.listSeparator'))})}
-                  </p>
-                )}
-                {/* 模型白名单与版本归属是**两道**检查，都要过：
-                    版本归属由上面的选项控制（粗粒度，拦跨版本调用），
-                    白名单在版本之内再收窄到具体几个模型（细粒度）。
-                    写模型名时注意与所选版本一致——带 global: 前缀的是国际版模型。 */}
-                <p className="text-[11px] leading-4 text-muted-foreground">
-                  {/* 反引号包住的模型名由 RichText 渲染成等宽字体 */}
-                  <RichText text={t('keys.modelPrefixNote')} />
-                </p>
+                <Label>{t('modelGroups.selectGroup')}</Label>
+                <Select value={form.model_group_id == null ? 'none' : String(form.model_group_id)}
+                  onValueChange={v => setForm(old => ({...old, model_group_id: v === 'none' ? null : Number(v), realm: modelGroups.find(g => g.id === Number(v))?.realm || old.realm}))}>
+                  <SelectTrigger aria-label={t('modelGroups.selectGroup')}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">{t('modelGroups.none')}</SelectItem>
+                    {modelGroups.map(g => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                    {form.model_group_id != null && !modelGroups.some(g => g.id === form.model_group_id) &&
+                      <SelectItem value={String(form.model_group_id)}>#{form.model_group_id} · {t('modelGroups.missing')}</SelectItem>}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">{t('modelGroups.keyHint')}</p>
+                <Link href="/model-groups" className="text-xs text-primary underline">{t('modelGroups.manage')}</Link>
               </div>
             </div>
           </DialogBody>

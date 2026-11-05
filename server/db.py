@@ -97,6 +97,15 @@ def day_start_ts(day: str | None = None) -> int:
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS model_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  realm TEXT NOT NULL DEFAULT '',
+  models TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS api_keys (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT    NOT NULL,
@@ -677,6 +686,7 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # 不设外键约束：SQLite 的外键要开 PRAGMA 且删除上游时语义是「级联删密钥」还是
     # 「拒绝删」都不合适 —— 本项目在应用层做「被引用就拒绝删」（见 upstreamsvc）。
     ('api_keys', 'upstream_id', 'INTEGER'),
+    ('api_keys', 'model_group_id', 'INTEGER'),
     # 分组（账号池）的**本地账号目录**：面板据此列账号 / 添号 / 移动账号。
     # 空 = 不做账号管理（该分组只用于密钥转发）。默认分组的目录来自 WB_AUTH_DIR，
     # 是运行时结果、不落库——与「默认上游不是数据库里的一行」同一个道理。
@@ -781,6 +791,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
             # 并发启动时可能已被另一进程加过，忽略即可
             pass
     _rebuild_usage_daily_pk(conn)
+    convert_key_models_to_groups(conn)
+
+
+def convert_key_models_to_groups(conn: sqlite3.Connection) -> None:
+    """Preserve legacy per-Key model limits as editable groups on upgrade/import.
+
+    Does not commit: participates in the caller's transaction. Malformed limits
+    remain restrictive instead of being silently converted into unrestricted Keys.
+    """
+    for row in conn.execute("SELECT id,name,realm,models FROM api_keys WHERE model_group_id IS NULL AND models NOT IN ('[]','', 'null')").fetchall():
+        try:
+            models = json.loads(row['models'])
+            if not isinstance(models, list) or not models or any(not isinstance(m, str) or not m.strip() for m in models):
+                raise ValueError()
+        except (ValueError, TypeError):
+            models = ['invalid:legacy-model-limit']
+        stamp = int(time.time())
+        gid = conn.execute('INSERT INTO model_groups(name,realm,models,created_at,updated_at) VALUES(?,?,?,?,?)',
+                           ('原模型限制 · ' + str(row['name'] or row['id'])[:48], row['realm'] or '', json.dumps(models), stamp, stamp)).lastrowid
+        conn.execute("UPDATE api_keys SET model_group_id=?, models='[]' WHERE id=?", (gid, row['id']))
 
 
 def _rebuild_usage_daily_pk(conn: sqlite3.Connection) -> bool:

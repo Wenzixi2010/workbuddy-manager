@@ -18,7 +18,7 @@ from . import config, db, redpacket, security
 from .iputil import client_ip
 from .stdio_utf8 import force_utf8_stdio
 from .routers import (
-    accounts, migration, accountrisk as accountrisk_router, anthropic, auth, gateway, keys, logs, models, playground,
+    accounts, migration, accountrisk as accountrisk_router, anthropic, auth, gateway, keys, logs, modelgroups, models, playground,
     pgsync as pgsync_router, redpackets, responses, security as security_router,
     proxies, settings, stats, system, tokens, upstreams, watchdog as watchdog_router,
 )
@@ -308,6 +308,7 @@ app.include_router(accounts.router)
 app.include_router(migration.router)
 app.include_router(accountrisk_router.router)
 app.include_router(keys.router)
+app.include_router(modelgroups.router)
 # 红包：批量发放带额度的密钥（与密钥同属「分发」这件事，所以挨着放）
 app.include_router(redpackets.router)
 # 抽奖：**公开端点**（收到链接的人不需要账号），单独挂便于区分边界

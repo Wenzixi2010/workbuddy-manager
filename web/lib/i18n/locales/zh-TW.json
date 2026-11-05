@@ -1,4 +1,26 @@
 {
+  "modelGroups": {
+    "title": "模型群組",
+    "description": "在群組設定允許的模型，Key 僅選擇群組；修改對使用該群組的 Key 生效。",
+    "selectGroup": "模型群組",
+    "none": "不使用模型群組 · 不限模型",
+    "missing": "群組不存在",
+    "manage": "管理模型群組",
+    "groupTag": "模型群組：{name}",
+    "colIp": "IP 限制",
+    "required": "請填寫群組名稱並選擇至少一個模型",
+    "saved": "模型群組已儲存",
+    "create": "新增群組",
+    "empty": "尚無模型群組，新增後選擇模型。",
+    "summary": "{models} 個模型 · {keys} 個 Key 使用",
+    "edit": "編輯群組",
+    "delete": "刪除群組",
+    "deleteHint": "僅未被 Key 使用的群組可刪除。",
+    "editHint": "至少選擇一個模型，修改影響所有使用的 Key。空群組不會允許全部模型。",
+    "allowedModels": "可使用模型",
+    "save": "儲存群組",
+    "keyHint": "模型範圍在群組統一設定；未選则不限制模型。限定版本的群組會讓 Key 跟隨該版本。"
+  },
   "risk": {
     "pausedCount": "目前保護性暫停：{n}",
     "noNewPauses": "以下為歷史或已恢復的紀錄，目前沒有帳號因這些預警而保護性暫停。",
@@ -945,6 +967,7 @@
     "notLoaded": "未取得"
   },
   "models": {
+    "testSend": "傳送 Ciallo",
     "testAccount": "測試帳號",
     "testPublic": "預設 · 公共帳號池",
     "testUnavailable": "已停用/過期/無法載入",

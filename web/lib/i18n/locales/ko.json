@@ -1,4 +1,26 @@
 {
+  "modelGroups": {
+    "title": "모델 그룹",
+    "description": "그룹에 허용 모델을 설정하고 Key는 그룹만 선택합니다. 변경은 모든 연결된 Key에 적용됩니다.",
+    "selectGroup": "모델 그룹",
+    "none": "그룹 없음 · 모델 제한 없음",
+    "missing": "그룹 없음",
+    "manage": "모델 그룹 관리",
+    "groupTag": "모델 그룹: {name}",
+    "colIp": "IP 제한",
+    "required": "그룹 이름과 모델을 하나 이상 선택하세요",
+    "saved": "모델 그룹 저장됨",
+    "create": "그룹 생성",
+    "empty": "모델 그룹이 없습니다. 생성 후 모델을 선택하세요.",
+    "summary": "모델 {models}개 · Key {keys}개 사용",
+    "edit": "그룹 편집",
+    "delete": "그룹 삭제",
+    "deleteHint": "Key가 사용하지 않는 그룹만 삭제 가능합니다.",
+    "editHint": "모델을 하나 이상 선택하세요. 변경은 모든 Key에 적용됩니다. 빈 그룹은 모든 모델을 허용하지 않습니다.",
+    "allowedModels": "허용된 모델",
+    "save": "그룹 저장",
+    "keyHint": "그룹에서 모델 권한을 설정합니다. 미선택 시 제한 없음. 지역이 지정된 그룹은 Key 지역에도 적용됩니다."
+  },
   "risk": {
     "pausedCount": "현재 보호 중지: {n}",
     "noNewPauses": "과거 또는 복구된 기록입니다. 이 경고로 현재 보호 중지된 계정은 없습니다.",
@@ -945,6 +967,7 @@
     "notLoaded": "불러오지 못했습니다"
   },
   "models": {
+    "testSend": "Ciallo 전송",
     "testAccount": "테스트 계정",
     "testPublic": "기본 · 공용 계정 풀",
     "testUnavailable": "중지/만료/로드 불가",

@@ -9,6 +9,7 @@ import sqlite3
 import time
 
 from . import db
+from .services import modelgroups
 from .iputil import ip_matches
 
 TOKEN_PREFIX = 'wbk_'
@@ -176,6 +177,8 @@ def _account_ids(raw: object) -> list[str]:
 
 
 def _parse(row) -> dict:
+    gid = row['model_group_id'] if 'model_group_id' in row.keys() else None
+    group = modelgroups.get(gid) if gid else None
     return {
         'id': row['id'],
         'name': row['name'],
@@ -186,7 +189,11 @@ def _parse(row) -> dict:
         'expires_at': row['expires_at'],
         'max_ips': row['max_ips'],
         'ip_allowlist': _json_list(row['ip_allowlist']),
-        'models': _json_list(row['models']),
+        'models': (group['models'] if group and group['models'] else ['invalid:model-group']) if gid else _json_list(row['models']),
+        'model_group_id': gid,
+        'model_group_name': group['name'] if group else None,
+        'model_group_realm': group['realm'] if group else '',
+        'model_group_invalid': bool(gid and (not group or not group['models'])),
         'realm': _norm_realm(row['realm']),
         # 绑定的上游接入点（多上游 / 分组隔离）。None = 默认上游 —— 见 upstreamsvc
         # 的模块注释：默认上游不是数据库里的某一行，所以这里保持 None 而不是补 0。
@@ -251,6 +258,7 @@ def create_key(
     bind_mode: str = 'whitelist',
     *,
     custom_key: str | None = None,
+    model_group_id: int | None = None,
     _conn: sqlite3.Connection | None = None,
 ) -> dict:
     """创建一个密钥。返回含**明文 token** 的字典。
@@ -272,8 +280,8 @@ def create_key(
     token = custom if custom is not None else TOKEN_PREFIX + secrets.token_urlsafe(32)
     sql = ('INSERT INTO api_keys(name, key_hash, key_plain, prefix, enabled, expires_at, '
            'max_ips, ip_allowlist, models, realm, quota, used_tokens, quota_credit, '
-           'used_credit, created_at, upstream_id, account_ids, bind_mode) '
-           'VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?)')
+           'used_credit, created_at, upstream_id, account_ids, bind_mode, model_group_id) '
+           'VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?, ?)')
     args = (
         name,
         _hash(token),
@@ -290,6 +298,7 @@ def create_key(
         _norm_upstream_id(upstream_id),
         json.dumps(account_ids or []),
         bind_mode,
+        model_group_id,
     )
     if custom is not None:
         # One conditional INSERT, not check-then-insert: SQLite serializes the
@@ -369,6 +378,9 @@ def update_key(key_id: int, patch: dict) -> dict | None:
         fields['ip_allowlist'] = json.dumps(_norm_cidrs(patch['ip_allowlist']))
     if 'models' in patch:
         fields['models'] = json.dumps(patch['models'] or [])
+    if 'model_group_id' in patch:
+        fields['model_group_id'] = patch['model_group_id'] or None
+        fields['models'] = '[]'
     if 'realm' in patch:
         # 显式传 null/'' 是**允许**的：管理员可以把旧密钥改回「不限制」。
         # 所以这里不能用 `patch['realm'] or ...` 之类的真值判断。
@@ -437,6 +449,11 @@ def model_allowed(key: dict, model: object) -> bool:
 
     白名单为空 = 不限制，一律放行。
     """
+    if key.get('model_group_invalid'):
+        return False
+    group_realm = key.get('model_group_realm') or ''
+    if group_realm and (not isinstance(model, str) or db.realm_of_model(model) != group_realm):
+        return False
     allow = key.get('models') or []
     if not allow:
         return True
@@ -653,7 +670,7 @@ def validate(key: dict, ip: str, model: str | None,
     # （或传空串/非字符串）时整段跳过，于是限定单模型的密钥可用「不带 model」的
     # 请求走上游默认模型——白名单形同虚设。请求侧已在网关把缺失/非法的 model
     # 拦成 400；这里再兜一层，任何非字符串或空值一律拒绝。
-    if key['models'] and not is_model_list:
+    if (key['models'] or key.get('model_group_id')) and not is_model_list:
         if not isinstance(model, str) or not model.strip():
             return Rejection('请求未指定 model，而该密钥启用了模型白名单', 400,
                              'invalid_request_error', 'model_not_allowed')

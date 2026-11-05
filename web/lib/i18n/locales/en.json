@@ -1,4 +1,26 @@
 {
+  "modelGroups": {
+    "title": "Model groups",
+    "description": "Configure allowed models in groups; Keys select a group. Changes apply to all assigned Keys.",
+    "selectGroup": "Model group",
+    "none": "No group · unrestricted models",
+    "missing": "Group missing",
+    "manage": "Manage model groups",
+    "groupTag": "Model group: {name}",
+    "colIp": "IP limits",
+    "required": "Enter a group name and select at least one model",
+    "saved": "Model group saved",
+    "create": "New group",
+    "empty": "No model groups. Create one and select models.",
+    "summary": "{models} models · {keys} Keys",
+    "edit": "Edit group",
+    "delete": "Delete group",
+    "deleteHint": "Only groups not assigned to Keys can be deleted.",
+    "editHint": "Select at least one model. Changes affect all assigned Keys; empty groups never allow all models.",
+    "allowedModels": "Allowed models",
+    "save": "Save group",
+    "keyHint": "Model permissions are configured in groups. No group adds no model restriction. Realm-limited groups set the Key’s realm."
+  },
   "risk": {
     "pausedCount": "Currently safety-paused: {n}",
     "noNewPauses": "These are historical or recovered events. No accounts are currently safety-paused by these warnings.",
@@ -972,6 +994,7 @@
     "notLoaded": "Not loaded"
   },
   "models": {
+    "testSend": "Send Ciallo",
     "testAccount": "Test account",
     "testPublic": "Default · public account pool",
     "testUnavailable": "Disabled/expired/unloadable",

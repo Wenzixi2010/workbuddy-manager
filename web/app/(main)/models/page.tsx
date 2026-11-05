@@ -151,8 +151,9 @@ export default function ModelsPage() {
     result?: ModelTestResult;
     error?: string;
     elapsedMs?: number;
+    sent?: boolean;
   } | null>(null);
-  const testing = !!testState && !testState.result && !testState.error;
+  const testing = !!testState?.sent && !testState.result && !testState.error;
 
   const closeTest = useCallback(() => {
     testAbort.current?.abort();
@@ -166,6 +167,11 @@ export default function ModelsPage() {
     return () => { testAbort.current?.abort(); testAbort.current = null; };
   }, [realm, closeTest]);
 
+  const openTest = (model: CatalogModel) => {
+    if (testAbort.current) return;
+    setTestState({model, realm: realmName, account: '', sent: false});
+  };
+
   const runTest = async (model: CatalogModel) => {
     // A ref prevents a double click from consuming credits twice before React renders.
     if (!isAdmin || testAbort.current) return;
@@ -175,16 +181,16 @@ export default function ModelsPage() {
     const ac = new AbortController();
     testAbort.current = ac;
     const started = performance.now();
-    setTestState({model, account, realm: realmName});
+    setTestState({model, account, sent: true, realm: realmName});
     try {
       const result = await modelApi.test(model.id, realm, ac.signal, testAccount === 'public' ? undefined : testAccount);
       if (testAbort.current !== ac) return;
-      setTestState({model, account, realm: realmName, result, elapsedMs: Math.round(performance.now() - started)});
+      setTestState({model, account, sent: true, realm: realmName, result, elapsedMs: Math.round(performance.now() - started)});
     } catch (error) {
       if (testAbort.current !== ac) return;
       const message = error instanceof Error && error.message.startsWith('models.test')
         ? t(error.message) : errText(error);
-      setTestState({model, account, realm: realmName, error: message, elapsedMs: Math.round(performance.now() - started)});
+      setTestState({model, account, sent: true, realm: realmName, error: message, elapsedMs: Math.round(performance.now() - started)});
     } finally {
       if (testAbort.current === ac) testAbort.current = null;
     }
@@ -482,27 +488,6 @@ export default function ModelsPage() {
         </div>
       </section>
 
-      {isAdmin && <section className="space-y-2 rounded-[16px] bg-muted p-4">
-        <Label htmlFor="model-test-account">{t('models.testAccount')}</Label>
-        <div className="flex flex-wrap items-center gap-2">
-          <Select value={testAccount} onValueChange={setTestAccount} disabled={testing || accountsLoading}>
-            <SelectTrigger id="model-test-account" aria-label={t('models.testAccount')} className="w-full max-w-lg"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="public">{t('models.testPublic')}</SelectItem>
-              {testAccounts.map(a => <SelectItem key={accountIdentity(a)} value={accountIdentity(a)}
-                disabled={a.disabled_by_panel || a.is_expired || !!a.invalid_reason}>
-                {a.note || a.nickname || a.uid} · {accountIdentity(a)}
-                {(a.disabled_by_panel || a.is_expired || a.invalid_reason) ? ` · ${t('models.testUnavailable')}` : ''}
-              </SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Button size="sm" variant="outline" disabled={testing || accountsLoading} onClick={() => setAccountsRetry(n => n + 1)}>{t('models.testRefreshAccounts')}</Button>
-        </div>
-        <p className="text-xs leading-5 text-muted-foreground">{t('models.testAccountHint')}</p>
-        {accountsLoading && <p role="status" className="text-xs text-muted-foreground">{t('models.testAccountsLoading')}</p>}
-        {accountsError && <p role="alert" className="text-xs text-destructive">{accountsError}</p>}
-      </section>}
-
       {/* 列表。走到这里 `data` 一定已经取到了（首屏守卫已在上方返回）。 */}
       <section className="overflow-hidden rounded-[20px] bg-muted">
         {models.length === 0 ? (
@@ -614,7 +599,7 @@ export default function ModelsPage() {
                           <Button size="sm" variant="outline" disabled={testing}
                             title={t('models.testAccountHint')}
                             aria-label={t('models.testModel', {model: m.name || m.id})}
-                            onClick={() => { void runTest(m); }}>
+                            onClick={() => openTest(m)}>
                             {testing && testState?.model.id === m.id
                               ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
                             {t('models.test')}
@@ -643,9 +628,30 @@ export default function ModelsPage() {
           </DialogHeader>
           <DialogBody>
             <div className="space-y-4 px-6 pb-2">
+              <section className="space-y-2 rounded-xl bg-muted p-3">
+                <Label htmlFor="model-test-account-dialog">{t('models.testAccount')}</Label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={testAccount} onValueChange={setTestAccount} disabled={testing || accountsLoading}>
+                    <SelectTrigger id="model-test-account-dialog" aria-label={t('models.testAccount')} className="w-full max-w-lg"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="public">{t('models.testPublic')}</SelectItem>
+                      {testAccounts.map(a => <SelectItem key={accountIdentity(a)} value={accountIdentity(a)}
+                        disabled={a.disabled_by_panel || a.is_expired || !!a.invalid_reason}>
+                        {a.note || a.nickname || a.uid} · {accountIdentity(a)}
+                        {(a.disabled_by_panel || a.is_expired || a.invalid_reason) ? ` · ${t('models.testUnavailable')}` : ''}
+                      </SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" variant="outline" disabled={testing || accountsLoading} onClick={() => setAccountsRetry(n => n + 1)}>{t('models.testRefreshAccounts')}</Button>
+                </div>
+                <p className="text-xs leading-5 text-muted-foreground">{t('models.testAccountHint')}</p>
+                {accountsLoading && <p role="status" className="text-xs text-muted-foreground">{t('models.testAccountsLoading')}</p>}
+                {accountsError && <p role="alert" className="text-xs text-destructive">{accountsError}</p>}
+              </section>
+
               <div className="text-sm font-medium">{testState?.model.name || testState?.model.id}</div>
               <div className="break-all font-mono text-xs text-muted-foreground">{testState?.realm} · {testState?.model.id}</div>
-              <p className="break-words text-xs text-muted-foreground">{t('models.testAccount')}: {testState?.account}</p>
+              {!!testState?.account && <p className="break-words text-xs text-muted-foreground">{t('models.testAccount')}: {testState.account}</p>}
               <div className="rounded-xl bg-muted p-3 text-sm">
                 <p className="mb-1 text-xs text-muted-foreground">{t('models.testPrompt')}</p>
                 <p className="font-mono">{MODEL_TEST_PROMPT}</p>
@@ -674,6 +680,10 @@ export default function ModelsPage() {
           </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={closeTest}>{t(testing ? 'models.testCancel' : 'models.testClose')}</Button>
+            <Button disabled={testing || (testAccount !== 'public' && (accountsLoading || !!accountsError))}
+              onClick={() => { if (testState) void runTest(testState.model); }}>
+              {testing && <Loader2 className="mr-2 size-4 animate-spin" />}{t('models.testSend')}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

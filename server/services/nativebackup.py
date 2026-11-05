@@ -28,7 +28,7 @@ MAX_ACCOUNTS = 5000
 MAX_ACCOUNT_BYTES = 2 * 1024 * 1024
 MAX_CREDENTIAL_BYTES = 64 * 1024 * 1024
 BUSINESS_TABLES = (
-    'api_keys', 'api_key_ips', 'account_key_access', 'account_notes', 'account_additions',
+    'model_groups', 'api_keys', 'api_key_ips', 'account_key_access', 'account_notes', 'account_additions',
     'request_logs', 'request_account_matches', 'usage_daily', 'usage_hourly',
     'checkin_logs', 'task_logs', 'ip_rules', 'ip_access_logs', 'red_packets', 'red_packet_shares',
 )
@@ -127,7 +127,7 @@ def _plan(source: sqlite3.Connection, target_group: dict) -> tuple[dict, list[di
         exported_tables = json.loads(manifest[0][3])
         if not isinstance(groups, list) or not groups or len(groups) > 1000 or not isinstance(exported_tables, list):
             raise ValueError()
-        if not set(BUSINESS_TABLES).issubset(exported_tables) or 'settings' not in exported_tables:
+        if not (set(BUSINESS_TABLES) - {'model_groups'}).issubset(exported_tables) or 'settings' not in exported_tables:
             raise BackupError('备份不含完整管理端业务数据，不能进行恢复')
     except (ValueError, TypeError):
         raise BackupError('恢复备份清单无效') from None
@@ -201,6 +201,8 @@ def _plan(source: sqlite3.Connection, target_group: dict) -> tuple[dict, list[di
             raise BackupError('恢复备份包含无效、重复或过大的账号凭据，未写入') from None
     columns = {}
     for table in (*BUSINESS_TABLES, 'settings'):
+        if table == 'model_groups' and table not in exported_tables:
+            continue  # Backups exported before reusable groups remain restorable.
         _plain_table(source, table)
         source_cols = [r[1] for r in source.execute(f'PRAGMA table_info("{table}")')]
         with db._lock:
@@ -208,6 +210,10 @@ def _plan(source: sqlite3.Connection, target_group: dict) -> tuple[dict, list[di
         if not source_cols or not set(source_cols).issubset(target_cols):
             raise BackupError('备份表结构与当前管理端不兼容，请先升级到匹配版本')
         columns[table] = source_cols
+    if 'model_group_id' in columns['api_keys']:
+        group_ids = {r[0] for r in source.execute('SELECT id FROM model_groups')} if 'model_groups' in columns else set()
+        if any(r[0] not in group_ids for r in source.execute('SELECT model_group_id FROM api_keys WHERE model_group_id IS NOT NULL')):
+            raise BackupError('备份 Key 引用了不存在的模型分组，恢复已拒绝')
     for key in source.execute('SELECT id,key_hash,key_plain,upstream_id FROM api_keys'):
         if int(key[3] or 0) not in mapping:
             raise BackupError('Key 引用了备份清单外的分组，恢复已拒绝')
@@ -284,6 +290,8 @@ def restore(source: sqlite3.Connection, group: dict, *, preview: bool, include_l
             try:
                 for table in BUSINESS_TABLES:
                     conn.execute(f'DELETE FROM "{table}"')
+                    if table not in columns:
+                        continue
                     if table in LOG_TABLES and not include_logs:
                         continue
                     names = columns[table]
@@ -318,6 +326,7 @@ def restore(source: sqlite3.Connection, group: dict, *, preview: bool, include_l
                 conn.execute(f'DELETE FROM settings WHERE key IN ({placeholders})', SETTING_KEYS)
                 conn.executemany('INSERT INTO settings(key,value) VALUES(?,?)',
                                  source.execute(f'SELECT key,value FROM settings WHERE key IN ({placeholders})', SETTING_KEYS))
+                db.convert_key_models_to_groups(conn)
                 for path in sorted(paths):
                     _replace_file(path, incoming.get(path))
                 conn.commit()

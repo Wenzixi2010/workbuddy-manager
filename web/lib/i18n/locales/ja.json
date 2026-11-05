@@ -1,4 +1,26 @@
 {
+  "modelGroups": {
+    "title": "モデルグループ",
+    "description": "グループに許可モデルを設定し、Key はグループを選択します。変更は使用する全 Key に適用されます。",
+    "selectGroup": "モデルグループ",
+    "none": "グループなし・モデル制限なし",
+    "missing": "グループがありません",
+    "manage": "モデルグループ管理",
+    "groupTag": "モデルグループ：{name}",
+    "colIp": "IP 制限",
+    "required": "名前と最低一つのモデルを指定してください",
+    "saved": "グループ保存済み",
+    "create": "グループ作成",
+    "empty": "グループがありません。作成してモデルを選択してください。",
+    "summary": "{models} モデル・{keys} Key が使用",
+    "edit": "グループ編集",
+    "delete": "グループ削除",
+    "deleteHint": "Key が使用中のグループは削除できません。",
+    "editHint": "最低一つのモデルを選択。変更は使用中 Key に適用されます。空グループは全モデルを許可しません。",
+    "allowedModels": "許可モデル",
+    "save": "グループ保存",
+    "keyHint": "モデル制限はグループで設定。未指定は制限なし。リージョン限定グループは Key にも適用されます。"
+  },
   "risk": {
     "pausedCount": "現在の保護停止：{n}",
     "noNewPauses": "過去または復旧済みの記録です。これらの警告による現在の保護停止はありません。",
@@ -945,6 +967,7 @@
     "notLoaded": "取得できませんでした"
   },
   "models": {
+    "testSend": "Ciallo を送信",
     "testAccount": "テストアカウント",
     "testPublic": "既定・共有プール",
     "testUnavailable": "停止/期限切れ/読込不可",

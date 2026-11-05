@@ -1,4 +1,26 @@
 {
+  "modelGroups": {
+    "title": "模型分组",
+    "description": "在分组中设置允许使用的模型，Key 只选择分组；组内调整对使用它的 Key 共同生效。",
+    "selectGroup": "模型分组",
+    "none": "不使用模型分组 · 不限模型",
+    "missing": "分组不存在",
+    "manage": "管理模型分组",
+    "groupTag": "模型组：{name}",
+    "colIp": "IP 限制",
+    "required": "请填写分组名称并选择至少一个模型",
+    "saved": "模型分组已保存",
+    "create": "新建分组",
+    "empty": "暂无模型分组，点击新建分组后选择模型。",
+    "summary": "{models} 个模型 · {keys} 个 Key 使用",
+    "edit": "编辑分组",
+    "delete": "删除分组",
+    "deleteHint": "只有未被 Key 使用的分组才能删除。",
+    "editHint": "请至少选择一个模型；修改此分组会影响所有选用它的 Key。空分组不会允许全部模型。",
+    "allowedModels": "可使用模型",
+    "save": "保存分组",
+    "keyHint": "模型范围在分组里统一设置；不选分组则不添加模型限制。限定版本的分组会让 Key 跟随该版本。"
+  },
   "risk": {
     "pausedCount": "当前保护性暂停：{n}",
     "noNewPauses": "以下是历史或已恢复的记录，当前没有账号因这些预警被保护性暂停。",
@@ -945,6 +967,7 @@
     "notLoaded": "未取到"
   },
   "models": {
+    "testSend": "发送 Ciallo",
     "testAccount": "测试账号",
     "testPublic": "默认 · 公共账号池",
     "testUnavailable": "已停用/过期/无法加载",

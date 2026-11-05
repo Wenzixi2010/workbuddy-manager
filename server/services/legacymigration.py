@@ -330,6 +330,7 @@ def _migrate_data(data: dict, group: dict, *, preview: bool, overwrite: bool) ->
                     conn.execute('INSERT OR IGNORE INTO account_key_access(auth_dir,account_id,key_ids) VALUES(?,?,?)',
                                  (accountaccess.directory(group), aid, json.dumps(owners)))
                 _import_logs(conn, data, accounts, key_map, result)
+                db.convert_key_models_to_groups(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()

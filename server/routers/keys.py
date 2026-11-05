@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import config, db, keysvc, security, upstreamsvc
-from ..services import accountaccess, keyaccounts, keyexport, keyimport, modelcatalog, modelmap
+from ..services import accountaccess, keyaccounts, keyexport, keyimport, modelgroups, modelcatalog, modelmap
 from ..iputil import client_ip
 
 router = APIRouter(prefix='/api/keys', tags=['keys'])
@@ -64,6 +64,7 @@ def _check_name(name: str | None) -> None:
 
 class KeyIn(BaseModel):
     custom_key: str | None = Field(default=None, repr=False)
+    model_group_id: int | None = None
     account_ids: list[str] = Field(default_factory=list, max_length=500)
     bind_mode: Literal['whitelist', 'exclusive'] = 'whitelist'
     name: str = Field(min_length=1, max_length=64)
@@ -84,6 +85,7 @@ class KeyIn(BaseModel):
 
 
 class KeyPatch(BaseModel):
+    model_group_id: int | None = None
     account_ids: list[str] | None = Field(default=None, max_length=500)
     bind_mode: Literal['whitelist', 'exclusive'] | None = None
     name: str | None = None
@@ -150,6 +152,8 @@ def list_keys(user: dict = Depends(security.current_user)) -> list[dict]:
 def create_key(body: KeyIn, request: Request,
                user: dict = Depends(security.require_admin)) -> dict:
     _check_name(body.name)
+    if body.model_group_id and modelgroups.get(body.model_group_id) is None:
+        raise HTTPException(400, '模型分组不存在，请重新选择')
     _check_ip_allowlist(body.ip_allowlist)
     _check_upstream(body.upstream_id)
     accountaccess.validate_selection(body.account_ids, body.upstream_id)
@@ -157,10 +161,11 @@ def create_key(body: KeyIn, request: Request,
         created = keysvc.create_key(
             name=body.name,
             custom_key=body.custom_key,
+            model_group_id=body.model_group_id or None,
             expires_at=body.expires_at,
             max_ips=body.max_ips,
             ip_allowlist=body.ip_allowlist,
-            models=body.models,
+            models=[] if body.model_group_id else body.models,
             quota=body.quota,
             realm=body.realm,
             quota_credit=body.quota_credit,
@@ -186,6 +191,8 @@ def create_key(body: KeyIn, request: Request,
 def update_key(key_id: int, body: KeyPatch, user: dict = Depends(security.require_admin)) -> dict:
     # 只校验本次真的提交了的字段（PATCH 是部分更新，`exclude_unset` 语义）
     patch = body.model_dump(exclude_unset=True)
+    if patch.get('model_group_id') and modelgroups.get(patch['model_group_id']) is None:
+        raise HTTPException(400, '模型分组不存在，请重新选择')
     if 'name' in patch:
         _check_name(patch['name'])
     if 'ip_allowlist' in patch:

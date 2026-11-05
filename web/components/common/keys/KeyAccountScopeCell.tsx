@@ -37,7 +37,7 @@ export function KeyAccountScopeCell({apiKey, kind}: {apiKey: ApiKey; kind: 'boun
     if (!selected.length) return <span className="text-xs text-muted-foreground">{t('keys.scopePublic')}</span>;
     const bound = access?.bound ?? selected.map(id => ({id, uid: id, name: id,
       realm: 'cn' as const, exists: true, disabled: false, expired: false, invalid: false}));
-    return <div className="min-w-36 space-y-1">
+    return <div className="max-w-48 space-y-1">
       <p className="text-[10px] font-medium text-muted-foreground">{t(apiKey.bind_mode === 'exclusive' ? 'accountAccess.exclusive' : 'accountAccess.whitelist')}</p>
       <AccountNames accounts={bound} />
     </div>;

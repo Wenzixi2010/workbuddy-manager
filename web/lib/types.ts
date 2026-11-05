@@ -460,7 +460,21 @@ export interface KeyAccountAccess {
   upstream_enabled: boolean;
 }
 
+export interface ModelGroup {
+  id: number;
+  name: string;
+  realm: '' | 'cn' | 'global';
+  models: string[];
+  key_count: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface ApiKey {
+  model_group_id?: number | null;
+  model_group_name?: string | null;
+  model_group_realm?: '' | 'cn' | 'global';
+  model_group_invalid?: boolean;
   account_access?: KeyAccountAccess;
   account_ids?: string[];
   bind_mode?: 'whitelist' | 'exclusive';

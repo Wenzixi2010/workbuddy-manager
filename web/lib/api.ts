@@ -41,6 +41,7 @@ import type {
   KeyImportStatus,
   Me,
   ModelCatalog,
+  ModelGroup,
   PricingInfo,
   ModelListResponse,
   Page,
@@ -904,4 +905,12 @@ export const migrationApi = {
     const response = await http.post<LegacyMigrationResult>('/api/migration/sqlite', body, {params, timeout: 30 * 60 * 1000});
     return response.data;
   },
+};
+
+/** Reusable model scopes, distinct from upstream/account-pool groups. */
+export const modelGroupsApi = {
+  list: () => get<ModelGroup[]>('/api/model-groups'),
+  create: (body: {name: string; realm: string; models: string[]}) => post<ModelGroup>('/api/model-groups', body),
+  update: (id: number, body: {name: string; realm: string; models: string[]}) => put<ModelGroup>(`/api/model-groups/${id}`, body),
+  remove: (id: number) => del<{ok: boolean}>(`/api/model-groups/${id}`),
 };
