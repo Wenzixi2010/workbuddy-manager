@@ -48,6 +48,7 @@ import {EmptyState} from '@/components/common/layout/EmptyState';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
+import {RenameUserDialog} from '@/components/common/settings/RenameUserDialog';
 import {ResetPasswordDialog} from '@/components/common/settings/ResetPasswordDialog';
 import {useAuth} from '@/lib/auth-context';
 import {UpdatePanel} from '@/components/common/settings/UpdatePanel';
@@ -2076,6 +2077,7 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
                 <div className="space-y-1.5">
                   <Label className="text-[11px] text-muted-foreground">{t('login.password')}</Label>
                   <Input type="password" value={newUser.password} onChange={(e) => setNewUser({...newUser, password: e.target.value})} className="bg-background" />
+                  <p className="text-xs text-muted-foreground">{t('settings.passwordLengthHint')}</p>
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-[11px] text-muted-foreground">{t('settings.usersRole')}</Label>
@@ -2097,6 +2099,10 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
                     }
                     setBusy(true);
                     try {
+                      if (Array.from(newUser.password).length < 8) {
+                        notify.err(t('settings.passwordLengthHint'));
+                        return;
+                      }
                       await settingsApi.addUser(newUser);
                       notify.ok(t('settings.usersCreated'));
                       setNewUser({username: '', password: '', role: 'viewer'});
@@ -2139,6 +2145,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
                           {/* 重置密码走与「删除用户」同一套对话框（原来这里是
                               window.prompt，同一行里两种风格）。校验、清空、
                               改完自己要不要重新登录等逻辑都在组件里。 */}
+                          <RenameUserDialog username={u.username} onSaved={() => { void reload(); }}
+                            trigger={<Button variant="ghost" size="sm" className="h-7 rounded-full text-xs">{t('settings.renameUser')}</Button>} />
                           <ResetPasswordDialog
                             username={u.username}
                             trigger={

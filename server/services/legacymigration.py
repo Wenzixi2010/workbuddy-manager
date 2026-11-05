@@ -6,10 +6,11 @@ are never executed or copied into the manager configuration.
 from __future__ import annotations
 
 import base64
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import datetime as dt
 import hashlib
 import json
+import io
 import math
 import os
 from pathlib import Path
@@ -17,13 +18,15 @@ import sqlite3
 import tempfile
 import threading
 import time
+from typing import BinaryIO
 
 from .. import config, db, keysvc
 from . import accountaccess, accountimport, tencent, wb2api
 from .filelock import file_lock
 
 _lock = threading.Lock()
-MAX_BYTES = 64 * 1024 * 1024
+MAX_BYTES = 1024 * 1024 * 1024
+COPY_CHUNK_BYTES = 1024 * 1024
 
 
 class MigrationError(ValueError):
@@ -54,15 +57,49 @@ def number(value: object) -> float:
         raise MigrationError('旧数据包含无效额度') from None
 
 
-def _read_source(payload: bytes, include_logs: bool) -> dict[str, list[dict]]:
-    if not payload.startswith(b'SQLite format 3\x00'):
+class _LogRows:
+    """Re-iterable, bounded-memory log source; previews only count rows."""
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+        self.count = conn.execute('SELECT COUNT(*) FROM usage_logs').fetchone()[0]
+        known = {r['name'] for r in conn.execute('PRAGMA table_info(usage_logs)')}
+        names = ('id', 'api_key_id', 'account_id', 'model', 'credits', 'prompt_tokens',
+                 'completion_tokens', 'cached_tokens', 'client_ip', 'ttfb_ms', 'latency_ms',
+                 'error_kind', 'created_at', 'reasoning_effort')
+        self.columns = ','.join('"' + n + '"' for n in names if n in known)
+
+    def __len__(self):
+        return self.count
+
+    def __iter__(self):
+        cursor = self.conn.execute(f'SELECT {self.columns} FROM usage_logs ORDER BY id')
+        while True:
+            rows = cursor.fetchmany(500)
+            if not rows:
+                break
+            yield from (dict(row) for row in rows)
+
+
+@contextmanager
+def _read_source(payload: bytes | BinaryIO, include_logs: bool):
+    source = io.BytesIO(payload) if isinstance(payload, bytes) else payload
+    source.seek(0, os.SEEK_END)
+    if source.tell() > MAX_BYTES:
+        raise MigrationError('SQLite 文件不能超过 1 GB（1024 MB）')
+    source.seek(0)
+    if source.read(16) != b'SQLite format 3\x00':
         raise MigrationError('文件不是 SQLite 数据库，请上传旧版 workbuddy_admin.db 的完整备份')
-    if len(payload) > MAX_BYTES:
-        raise MigrationError('SQLite 文件不能超过 64 MB')
+    source.seek(0)
     with tempfile.TemporaryDirectory(prefix='wb-legacy-') as tmp:
         path = Path(tmp) / 'legacy.db'
-        path.write_bytes(payload)
-        os.chmod(path, 0o600)
+        with path.open('xb') as output:
+            os.chmod(path, 0o600)
+            total = 0
+            while chunk := source.read(COPY_CHUNK_BYTES):
+                total += len(chunk)
+                if total > MAX_BYTES:
+                    raise MigrationError('SQLite 文件不能超过 1 GB（1024 MB）')
+                output.write(chunk)
         conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
         conn.row_factory = sqlite3.Row
         try:
@@ -82,14 +119,17 @@ def _read_source(payload: bytes, include_logs: bool) -> dict[str, list[dict]]:
                     continue
                 if 'VIRTUAL TABLE' in tables[table].upper():
                     raise MigrationError('不支持虚拟表数据库')
-                maximum = 100000 if table == 'usage_logs' else 5000
+                if table == 'usage_logs':
+                    data[table] = _LogRows(conn)
+                    continue
+                maximum = 5000
                 rows = conn.execute(f'SELECT * FROM "{table}" ORDER BY id LIMIT ?', (maximum + 1,)).fetchall()
                 if len(rows) > maximum:
                     raise MigrationError(f'{table} 数据过多，请分批导出后迁移')
                 data[table] = [dict(r) for r in rows]
             if any('auth_json' not in r for r in data['accounts']) or any('key_full' not in r for r in data['api_keys']):
                 raise MigrationError('旧数据库缺少 auth_json 或 key_full 字段')
-            return data
+            yield data
         except sqlite3.Error:
             raise MigrationError('无法读取旧 SQLite；请上传完整备份（不要单独复制正在使用的 db 文件）') from None
         finally:
@@ -185,8 +225,12 @@ def _restore(path: Path, payload: bytes | None) -> None:
             Path(tmp).unlink(missing_ok=True)
 
 
-def migrate(payload: bytes, group: dict, *, preview: bool, include_logs: bool, overwrite: bool) -> dict:
-    data = _read_source(payload, include_logs)
+def migrate(payload: bytes | BinaryIO, group: dict, *, preview: bool, include_logs: bool, overwrite: bool) -> dict:
+    with _read_source(payload, include_logs) as data:
+        return _migrate_data(data, group, preview=preview, overwrite=overwrite)
+
+
+def _migrate_data(data: dict, group: dict, *, preview: bool, overwrite: bool) -> dict:
     accounts, keys, warnings = _plan(data)
     auth_dir = Path(group['auth_dir'])
     current_accounts = {accountaccess.identity(a): a for a in wb2api.list_auth_accounts(auth_dir)}

@@ -19,11 +19,10 @@ async def import_sqlite(request: Request, file: UploadFile = File(...),
                         user: dict = Depends(security.require_session_admin)) -> dict:
     group = _group(upstream_id)
     _require_dir(group)
-    payload = await file.read(legacymigration.MAX_BYTES + 1)
-    if len(payload) > legacymigration.MAX_BYTES:
-        raise HTTPException(413, 'SQLite 文件不能超过 64 MB')
+    if file.size is not None and file.size > legacymigration.MAX_BYTES:
+        raise HTTPException(413, 'SQLite 文件不能超过 1 GB（1024 MB）')
     try:
-        result = await run_in_threadpool(legacymigration.migrate, payload, group,
+        result = await run_in_threadpool(legacymigration.migrate, file.file, group,
                                          preview=preview, include_logs=include_logs, overwrite=overwrite)
     except legacymigration.MigrationError as exc:
         raise HTTPException(400, str(exc)) from None

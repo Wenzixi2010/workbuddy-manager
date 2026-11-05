@@ -52,7 +52,7 @@ export default function MigrationPage() {
           </Select>
         </div>
         <div className="max-w-lg space-y-2"><Label htmlFor="legacy-sqlite">{t('migration.file')}</Label>
-          <Input id="legacy-sqlite" type="file" accept=".db,.sqlite,.sqlite3" disabled={busy} onChange={e => { invalidate(); const selected = e.target.files?.[0] || null; if (selected && selected.size > 64 * 1024 * 1024) { setFile(null); setError(t('migration.tooLarge')); e.target.value = ''; } else setFile(selected); }} />
+          <Input id="legacy-sqlite" type="file" accept=".db,.sqlite,.sqlite3" disabled={busy} onChange={e => { invalidate(); const selected = e.target.files?.[0] || null; if (selected && selected.size > 1024 * 1024 * 1024) { setFile(null); setError(t('migration.tooLarge')); e.target.value = ''; } else setFile(selected); }} />
           <p className="text-xs text-muted-foreground">{t('migration.fileHint')}</p>
         </div>
         <label className="flex items-center gap-2 text-sm"><Checkbox disabled={busy} checked={overwrite} onCheckedChange={v => { setOverwrite(v === true); invalidate(); }} />{t('migration.overwrite')}</label>

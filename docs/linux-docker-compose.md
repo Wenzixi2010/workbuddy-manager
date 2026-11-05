@@ -321,7 +321,7 @@ http://127.0.0.1:17864/v1
 
 1. 在旧版停止写入后复制 SQLite，或使用 SQLite backup 导出完整快照。
 2. 在面板打开「账号 → 数据迁移」。
-3. 上传 `.db` / `.sqlite` / `.sqlite3`（最大 64 MB）。
+3. 上传 `.db` / `.sqlite` / `.sqlite3`（最大 1 GB（1024 MB））。
 4. 选择是否覆盖账号、是否迁移历史调用日志。
 5. 先点「预览数据」，确认数量和警告，再点「确认导入」。
 
@@ -419,13 +419,63 @@ docker compose ps
 - 补丁脚本支持重复执行。若新版本要求不同的基础上游快照，请按该版本说明迁移，不能直接把新压缩包覆盖到含 `auths/`、`data/`、`config.json` 的运行目录。
 - 更新后重新核验账号隔离版本，并测试 JSON 导入、Key 查看和客户端调用。
 
+### 已部署用户更新本次「1 GB 迁移与管理员改名」改动
+
+这次不需要更换 Go 上游，仅重建管理端。先按上一节备份，再在 Linux 宿主机执行：
+
+```bash
+sudo -i
+set -e
+cd /opt/workbuddy-stack
+
+git -C manager pull --ff-only origin main
+
+# 防止旧的宿主机前端产物被 Dockerfile 优先打包。
+if [ -d manager/web/out ]; then
+  mv -Tn manager/web/out "manager/web/out-before-update-$(date +%Y%m%d-%H%M%S)"
+  test ! -d manager/web/out
+fi
+
+docker compose build workbuddy-manager
+docker compose up -d --no-deps workbuddy-manager
+docker compose logs --tail=80 workbuddy-manager
+```
+
+更新后强制刷新浏览器（Ctrl+F5）。「数据迁移」应显示 **1 GB（1024 MB）**；在「设置 → 管理用户」可修改 `admin` 用户名，改名后用新用户名和原密码重新登录。新建/修改密码只要求至少 **8 位**，不要求字符组合；可使用纯数字或纯字母，但仍建议使用长随机密码，避免公网暴露管理入口。
+
+迁移大文件时：
+
+- 只有 SQLite 迁移接口放宽，普通管理 API 的 16 MB 限制与升级包限制保持不变。
+- 上传前验证管理员会话；文件以最多 1 MB 的块复制到临时目录，历史日志每批 500 条读取，不再限制 10 万条。
+- 浏览器请求超时延长到 30 分钟；预览和确认导入各上传一次，请保持页面和连接。
+- 容器临时目录通常在 `/tmp`。上传暂存和读取副本可能同时存在，建议为 1 GB 文件预留至少 3 GB 临时磁盘，再额外预留目标数据库和备份空间。预览不会修改原文件。
+- 如果反向代理先返回 413，请放宽代理的请求体上限；仅更新应用无法绕过代理/CDN 的限制。
+
+Nginx 示例（加入管理端对应的 `server` 或 `location`，不要新建同名冲突规则）：
+
+```nginx
+# 1 GiB 文件加上 multipart 开销；精确的文件 1 GiB 限制由应用校验。
+client_max_body_size 1100m;
+client_body_timeout 1800s;
+proxy_read_timeout 1800s;
+proxy_send_timeout 1800s;
+```
+
+修改后检查并重载 Nginx：
+
+```bash
+nginx -t && systemctl reload nginx
+```
+
+若使用宝塔/1Panel，修改对应站点反向代理的上传大小与超时；若仍受 CDN 限制，可通过上文的 SSH 隧道直接访问管理端再迁移。不需要把管理端端口开放到公网。
+
 ## 11. 域名、HTTPS 与公网访问
 
 SSH 隧道适合首次配置和个人访问。需要长期向其他设备提供服务时：
 
 1. 配置域名与 HTTPS 反向代理，代理到管理端 `http://127.0.0.1:7864`，不代理上游 `7863`。
 2. 为管理页面配置额外的访问控制，限制暴露范围；调用路径 `/v1/`、`/v2/` 也需要 TLS。
-3. 反向代理须关闭流式响应缓冲、设置合适超时，并允许足够大小的上传请求（SQLite 上限 64 MB，还应预留 multipart 开销）。
+3. 反向代理须关闭流式响应缓冲、设置合适超时，并允许足够大小的上传请求（SQLite 上限 1 GB（1024 MB），还应预留 multipart 开销）。
 4. 若启用 `WB_TRUST_PROXY: "1"`，代理必须覆盖写入可信的 `X-Real-IP`，不能直接信任客户端提供的头。
 5. 若反向代理也运行在容器里，不要把它的 `127.0.0.1` 当作宿主机。应连接到同一 Docker 网络，通过服务名访问管理端。
 

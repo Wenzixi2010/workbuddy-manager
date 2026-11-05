@@ -15,12 +15,12 @@ import {notify} from '@/lib/toast';
  * 无障碍能力也取决于浏览器，而且它与紧挨着的「删除用户」（走 ConfirmDialog）
  * 风格割裂——同一行里两个按钮，一个像产品的一部分，一个像浏览器的一部分。
  *
- * 长度判据（至少 12 位）与后端 `server/security.py` 的 `password_problem`
+ * 长度判据（至少 8 位）与后端 `server/security.py` 的 `password_problem`
  * 对齐。前端拦一道只是为了省掉一次必然失败的往返，**它不是安全边界**——
- * 真正的判据（长度、常见弱口令、用户名+数字）仍在后端，所以这里锁的是
+ * 真正的长度判据仍在后端，所以这里锁的是
  * 确认键，而不是把输入框本身禁掉。
  */
-const MIN_PASSWORD = 12;
+const MIN_PASSWORD = 8;
 
 export function ResetPasswordDialog({
   username,
@@ -48,7 +48,7 @@ export function ResetPasswordDialog({
         />
       }
       confirmText={t('settings.resetPassword')}
-      confirmDisabled={pwd.length < MIN_PASSWORD}
+      confirmDisabled={Array.from(pwd).length < MIN_PASSWORD}
       // 关掉就清空：弹窗实例会随列表行复用，留着上一次的输入等于把刚设的
       // 密码摆在下一个用户眼前。
       onOpenChange={(open) => {

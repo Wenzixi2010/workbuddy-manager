@@ -759,7 +759,7 @@ export const settingsApi = {
   addUser: (body: {username: string; password: string; role: string}) =>
     post<UserItem>('/api/users', body),
   /** 改密码 / 改角色；会吊销该用户的既有会话（改自己则需重新登录） */
-  updateUser: (username: string, body: {password?: string; role?: string}) =>
+  updateUser: (username: string, body: {username?: string; password?: string; role?: string}) =>
     patch<UserItem & {sessions_revoked?: boolean; relogin_required?: boolean}>(
       `/api/users/${encodeURIComponent(username)}`, body),
   removeUser: (username: string) => del<{ok: boolean}>(`/api/users/${encodeURIComponent(username)}`),
@@ -886,7 +886,7 @@ export const migrationApi = {
     body.append('file', file, file.name);
     const params = {preview: options.preview, overwrite: options.overwrite,
       include_logs: options.includeLogs, ...(options.upstreamId == null ? {} : {upstream_id: options.upstreamId})};
-    const response = await http.post<LegacyMigrationResult>('/api/migration/sqlite', body, {params, timeout: 120000});
+    const response = await http.post<LegacyMigrationResult>('/api/migration/sqlite', body, {params, timeout: 30 * 60 * 1000});
     return response.data;
   },
 };

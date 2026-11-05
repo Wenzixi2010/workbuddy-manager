@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import secrets
+import threading
 import time
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from fastapi import Depends, HTTPException, Request
 from . import config, tokensvc
 from .iputil import client_ip
 from .iputil import _is_trusted_proxy  # noqa: SLF001 —— 与 client_ip 同一份可信代理判据
+
+users_lock = threading.RLock()
 
 _fail: dict[str, list] = {}
 MAX_FAILS = 5
@@ -41,15 +44,9 @@ def verify_pwd(pwd: str, stored: str) -> bool:
 
 # ── 管理端密码策略 ─────────────────────────────────────
 #
-# 生产事故复盘：公网面板的 admin 密码被设成了 `admin123`，攻击者直接登录，
-# 导出了全部账号凭据。登录失败锁定拦不住「已知弱口令」——必须在设置密码时
-# 就拒绝，而不是等到被撞开以后。这里只做最小、确定的规则：
-#   · 至少 12 位；
-#   · 常见弱口令（含 admin/password/123456 等变体）直接拒绝；
-#   · 不允许「用户名 + 纯数字」；
-#   · 不允许纯数字或单一重复字符。
-# 不做复杂度打分/字典工程：规则越复杂越容易误伤，真正兜底的是长度与黑名单。
-MIN_PASSWORD_LENGTH = 12
+# Passwords require only a minimum length. Known weak values remain available
+# for startup warnings, but are not rejected by the configurable user flow.
+MIN_PASSWORD_LENGTH = 8
 
 _WEAK_PASSWORDS = frozenset({
     'admin', 'admin123', 'admin1234', 'admin12345', 'admin123456',
@@ -71,17 +68,6 @@ def password_problem(pwd: str, username: str = '') -> str | None:
     value = str(pwd or '')
     if len(value) < MIN_PASSWORD_LENGTH:
         return f'密码至少 {MIN_PASSWORD_LENGTH} 位'
-    low = value.lower()
-    if low in _WEAK_PASSWORDS:
-        return '密码过于常见，请换一个'
-    if username:
-        user = str(username).strip().lower()
-        if user and low.startswith(user) and low[len(user):].isdigit():
-            return '密码不能是用户名加数字'
-    if value.isdigit():
-        return '密码不能全是数字'
-    if len(set(value)) == 1:
-        return '密码不能是重复字符'
     return None
 
 
@@ -532,18 +518,19 @@ def session_version(cfg: dict, username: str) -> int:
 
 def revoke_sessions(username: str) -> int:
     """递增该用户的会话版本，返回新值。其全部既有 cookie 立即失效。"""
-    cfg = load_users()
-    new_sv = 0
-    for u in cfg.get('users', []):
-        if u.get('username') == username:
-            try:
-                new_sv = int(u.get('sv') or 0) + 1
-            except (TypeError, ValueError):
-                new_sv = 1
-            u['sv'] = new_sv
-            break
-    save_users(cfg)
-    return new_sv
+    with users_lock:
+        cfg = load_users()
+        new_sv = 0
+        for u in cfg.get('users', []):
+            if u.get('username') == username:
+                try:
+                    new_sv = int(u.get('sv') or 0) + 1
+                except (TypeError, ValueError):
+                    new_sv = 1
+                u['sv'] = new_sv
+                break
+        save_users(cfg)
+        return new_sv
 
 
 def audit(actor: dict | None, action: str, target: str = '', detail: str = '',

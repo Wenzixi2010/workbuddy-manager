@@ -153,13 +153,18 @@ class InitialPasswordFileTest(unittest.TestCase):
         self.assertFalse(self._pw_file().exists(),
                          '显式配置的密码不该被复制到磁盘')
 
-    def test_weak_env_password_refused(self) -> None:
-        """生产事故根因：WB_ADMIN_PASSWORD=admin123 必须拒绝启动，不能落库。"""
-        os.environ['WB_ADMIN_PASSWORD'] = 'admin123'
+    def test_short_env_password_refused(self) -> None:
+        """少于 8 位的启动密码不能落库。"""
+        os.environ['WB_ADMIN_PASSWORD'] = 'short7'
         with self.assertRaises(RuntimeError) as ctx:
             security.load_users()
         self.assertIn('密码策略', str(ctx.exception))
         self.assertFalse(self._path.exists(), '拒绝启动时不应写出 users.json')
+
+    def test_eight_digit_environment_password_accepted(self) -> None:
+        os.environ['WB_ADMIN_PASSWORD'] = '12345678'
+        cfg = security.load_users()
+        self.assertTrue(security.verify_pwd('12345678', cfg['users'][0]['pwd_hash']))
 
     def test_existing_weak_admin_password_detected(self) -> None:
         """升级上来的 users.json 若仍是 admin123，启动时必须能被点出来。"""
@@ -195,20 +200,20 @@ class InitialPasswordFileTest(unittest.TestCase):
 
 
 class PasswordPolicyTest(unittest.TestCase):
-    """管理端密码策略：长度、常见弱口令、用户名+数字、纯数字/重复字符。"""
+    """The configured policy is length-only, shared by all password writers."""
 
-    def test_common_and_short_passwords_rejected(self) -> None:
-        for pwd in ('admin123', 'admin123456789', 'password1234', '123456789012',
-                    'aaaaaaaaaaaa'):
+    def test_short_passwords_rejected(self):
+        for pwd in ('', '1234567', 'abc'):
             self.assertIsNotNone(security.password_problem(pwd), pwd)
 
-    def test_username_plus_digits_rejected(self) -> None:
-        self.assertIn('用户名加数字',
-                      security.password_problem('admin9876543210', 'admin') or '')
+    def test_eight_character_password_has_no_composition_requirements(self):
+        for pwd in ('admin123', 'password', '12345678', 'abcdefgh', 'ABCDEFGH',
+                    'aaaaaaaa', '!!!!!!!!', 'admin9876543210'):
+            self.assertIsNone(security.password_problem(pwd, 'admin'), pwd)
 
-    def test_strong_password_accepted(self) -> None:
+    def test_long_passphrases_still_accepted(self):
         self.assertIsNone(security.password_problem('correct-horse-battery', 'admin'))
-        self.assertIsNone(security.password_problem('Snow fox 2026!', 'admin'))
+
 
 
 class ModelAllowlistBypassTest(unittest.TestCase):

@@ -4,7 +4,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -191,17 +192,20 @@ if config.CORS_ORIGINS:
 # 取得比网关默认（8MB）宽松些：管理端有「保存上游配置」这类正常的大请求。
 MAX_API_BODY_BYTES = 16 * 1024 * 1024
 
-# 唯一需要更大请求体的管理端路径：上传离线升级包（issue #153）。发布包现在约
+# 上传离线升级包的独立请求体限制（issue #153）。发布包现在约
 # 11 MB，将来会变大，所以这里给到 64 MB —— 仍然是个**硬上限**，不是没有上限：
 # 上传本身还要过会话管理员鉴权，且落盘后立刻做 tar.gz 结构与 .version 校验。
 # 与 `updater.PACKAGE_MAX_BYTES` 必须一致（有测试盯着，别只改一边）。
 MAX_PACKAGE_BODY_BYTES = 64 * 1024 * 1024
 PACKAGE_UPLOAD_PATHS = ('/api/system/update-package',)
+# File limit plus bounded multipart overhead; unrelated APIs keep their limits.
+MAX_MIGRATION_BODY_BYTES = migration.legacymigration.MAX_BYTES + 1024 * 1024
+MIGRATION_UPLOAD_PATH = '/api/migration/sqlite'
 
 
 @app.middleware('http')
 async def limit_api_body(request: Request, call_next):
-    """给 `/api/*` 的请求体加上限（上传升级包那条路放宽，见上面的常量）。
+    """给 `/api/*` 的请求体加上限（升级包和 SQLite 迁移独立放宽）。
 
     只看 `Content-Length`：本中间件拦的是「声明了超大长度」这条最容易发起、
     也最容易自动化的路径（无鉴权即可打 /api/login），不用读流就能立即拒绝。
@@ -213,8 +217,8 @@ async def limit_api_body(request: Request, call_next):
             declared = int(request.headers.get('content-length') or 0)
         except ValueError:
             declared = 0
-        limit = (MAX_PACKAGE_BODY_BYTES
-                 if request.url.path in PACKAGE_UPLOAD_PATHS else MAX_API_BODY_BYTES)
+        limit = (MAX_MIGRATION_BODY_BYTES if request.url.path.rstrip('/') == MIGRATION_UPLOAD_PATH
+                 else MAX_PACKAGE_BODY_BYTES if request.url.path in PACKAGE_UPLOAD_PATHS else MAX_API_BODY_BYTES)
         if declared > limit:
             return JSONResponse(
                 {'detail': f'请求体过大（上限 {limit // 1024 // 1024} MB）'},
@@ -259,8 +263,22 @@ class ApiBodyLimitMiddleware:
         if scope.get('type') != 'http' or not scope.get('path', '').startswith('/api/'):
             await self.app(scope, receive, send)
             return
-        limit = (self.package_limit
-                 if scope['path'] in self.package_paths else self.limit)
+        if scope['path'].rstrip('/') == MIGRATION_UPLOAD_PATH:
+            # Authenticate BEFORE multipart parsing/spooling: only an active
+            # administrator session may consume up to 1 GiB of temporary disk.
+            request = Request(scope)
+            try:
+                if not request.cookies.get(config.COOKIE_NAME):
+                    raise HTTPException(401, '未登录')
+                cfg = await run_in_threadpool(security.load_users)
+                identity = security._cookie_identity(request, cfg)
+                security.require_admin(identity)
+            except HTTPException as exc:
+                await JSONResponse({'detail': exc.detail}, status_code=exc.status_code)(scope, receive, send)
+                return
+            limit = MAX_MIGRATION_BODY_BYTES
+        else:
+            limit = self.package_limit if scope['path'] in self.package_paths else self.limit
         received = 0
 
         async def limited_receive():

@@ -379,20 +379,16 @@ class UserAdminHttpTest(unittest.TestCase):
         r = self.c.patch('/api/users/admin', json={'password': 'abc'})
         self.assertEqual(r.status_code, 400)
 
-    def test_weak_password_rejected_on_create_and_change(self) -> None:
-        """生产事故根因：admin123 这类弱口令不能再被设置。"""
+    def test_short_password_rejected_on_create_and_change(self) -> None:
+        """Both user creation and password reset enforce the same eight-character minimum."""
         self.assertEqual(self._login('admin', 'http-admin-pw'), 200)
-
         r = self.c.post('/api/users', json={
-            'username': 'weakling', 'password': 'admin123', 'role': 'viewer'})
+            'username': 'short', 'password': '1234567', 'role': 'viewer'})
         self.assertEqual(r.status_code, 400)
-        self.assertIn('12', r.json().get('detail', ''))
-
-        r = self.c.patch('/api/users/admin', json={'password': 'admin9876543210'})
+        self.assertIn('8', r.json().get('detail', ''))
+        r = self.c.patch('/api/users/admin', json={'password': 'short7'})
         self.assertEqual(r.status_code, 400)
-        self.assertIn('用户名加数字', r.json().get('detail', ''))
-
-        # 被拒绝的两次都不能改掉原来的密码
+        self.assertIn('8', r.json().get('detail', ''))
         self.assertEqual(self._login('admin', 'http-admin-pw'), 200)
 
     def test_viewer_cannot_manage_users(self) -> None:

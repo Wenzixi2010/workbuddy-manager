@@ -337,8 +337,16 @@ class UserIn(BaseModel):
 
 
 class UserPatch(BaseModel):
+    username: str | None = Field(default=None, min_length=1, max_length=32)
     password: str | None = None
     role: str | None = Field(default=None, pattern='^(admin|viewer)$')
+
+
+def _username(value: str) -> str:
+    name = value.strip()
+    if not name or len(name) > 32 or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 or ch in '/\\' for ch in name):
+        raise HTTPException(400, '用户名需为 1–32 位，不能包含空白、斜杠或控制字符')
+    return name
 
 
 def _public(cfg: dict) -> list[dict]:
@@ -358,110 +366,124 @@ def add_user(body: UserIn, request: Request,
     审计是必须的：上次入侵里攻击者正是「先建自己的账号、再正常登录」，
     而这一步当时没有任何记录。新建用户写随机 sv，避免同名重建后旧 cookie 复活。
     """
+    body.username = _username(body.username)
     pw = str(body.password)
     problem = security.password_problem(pw, body.username)
     if problem:
         raise HTTPException(status_code=400, detail=problem)
-    cfg = security.load_users()
-    if any(u.get('username') == body.username for u in cfg.get('users', [])):
-        raise HTTPException(status_code=409, detail='用户名已存在')
-    cfg.setdefault('users', []).append({
-        'username': body.username,
-        'role': body.role,
-        'pwd_hash': security.make_hash(pw),
-        # 随机初始 sv：删除同名用户再重建时，不会让旧会话「复活」
-        'sv': secrets.randbelow(1 << 30),
-    })
-    security.save_users(cfg)
-    ip = client_ip(request)
-    security.audit(user, 'add_user', body.username,
-                   f'角色={body.role}；来源 {ip}', ip=ip)
-    return {'username': body.username, 'role': body.role}
+    with security.users_lock:
+        cfg = security.load_users()
+        if any(u.get('username', '').casefold() == body.username.casefold() for u in cfg.get('users', [])):
+            raise HTTPException(status_code=409, detail='用户名已存在')
+        cfg.setdefault('users', []).append({
+            'username': body.username,
+            'role': body.role,
+            'pwd_hash': security.make_hash(pw),
+            # 随机初始 sv：删除同名用户再重建时，不会让旧会话「复活」
+            'sv': secrets.randbelow(1 << 30),
+        })
+        security.save_users(cfg)
+        ip = client_ip(request)
+        security.audit(user, 'add_user', body.username,
+                       f'角色={body.role}；来源 {ip}', ip=ip)
+        return {'username': body.username, 'role': body.role}
 
 
 @router.patch('/users/{username}')
 def update_user(username: str, body: UserPatch, request: Request,
                 user: dict = Depends(security.require_session_admin)) -> dict:
-    """改密码 / 改角色。
+    """改用户名 / 改密码 / 改角色。
 
-    两种改动都必须**吊销该用户既有会话**：
+    三种改动都必须**吊销该用户既有会话**：
+      - 改名：保留角色与密码，但禁止旧名字/旧 Cookie 继续登录
       - 改密码：否则被盗会话在改密码后仍能用到过期（7 天）——本次事故里攻击者
         改掉 admin 密码后，真正管理员手里的旧会话不该还能管理后台
       - 改角色：权限必须立即生效，不能等 cookie 过期（载荷里的 role 只是快照）
 
     吊销按用户进行（递增其 sv），不影响其他已登录用户。
     """
-    cfg = security.load_users()
-    target = next((u for u in cfg.get('users', []) if u.get('username') == username), None)
-    if not target:
-        raise HTTPException(status_code=404, detail='用户不存在')
+    with security.users_lock:
+        cfg = security.load_users()
+        target = next((u for u in cfg.get('users', []) if u.get('username') == username), None)
+        if not target:
+            raise HTTPException(status_code=404, detail='用户不存在')
 
-    changed_pwd = changed_role = False
-    if body.password:
-        pw = str(body.password)
-        # 管理端是公网入口：弱口令等于没有防护，统一走与启动时相同的策略。
-        problem = security.password_problem(pw, username)
-        if problem:
-            raise HTTPException(status_code=400, detail=problem)
-        target['pwd_hash'] = security.make_hash(pw)
-        changed_pwd = True
-    if body.role and body.role != target.get('role'):
-        admins = [u for u in cfg.get('users', []) if u.get('role') == 'admin']
-        if target.get('role') == 'admin' and len(admins) <= 1:
-            raise HTTPException(status_code=400, detail='至少保留一个管理员')
-        target['role'] = body.role
-        changed_role = True
+        new_name = _username(body.username) if body.username is not None else username
+        changed_name = new_name != username
+        if changed_name and any(u.get('username', '').casefold() == new_name.casefold()
+                                for u in cfg.get('users', []) if u is not target):
+            raise HTTPException(409, '用户名已存在')
 
-    if changed_pwd or changed_role:
-        try:
-            target['sv'] = int(target.get('sv') or 0) + 1
-        except (TypeError, ValueError):
-            target['sv'] = 1
+        changed_pwd = changed_role = False
+        if body.password is not None:
+            pw = str(body.password)
+            # 与启动和新建用户共用至少 8 位的长度规则。
+            problem = security.password_problem(pw, new_name)
+            if problem:
+                raise HTTPException(status_code=400, detail=problem)
+            target['pwd_hash'] = security.make_hash(pw)
+            changed_pwd = True
+        if body.role and body.role != target.get('role'):
+            admins = [u for u in cfg.get('users', []) if u.get('role') == 'admin']
+            if target.get('role') == 'admin' and len(admins) <= 1:
+                raise HTTPException(status_code=400, detail='至少保留一个管理员')
+            target['role'] = body.role
+            changed_role = True
 
-    security.save_users(cfg)
-    if changed_pwd and username == 'admin':
-        # 改掉初始密码后，把 issue #179 留的那份明文副本抹掉 ——
-        # 这里只存了初始 admin 密码，改其他用户的密码不应让它失效。
-        security.clear_initial_password_file()
-    if changed_pwd or changed_role:
-        parts = []
-        if changed_pwd:
-            parts.append('改密码')
-        if changed_role:
-            parts.append('改角色')
-        ip = client_ip(request)
-        security.audit(user, 'update_user', username,
-                       '、'.join(parts) + f'；来源 {ip}', ip=ip)
-    # 把自己的密码改了，当前会话也会失效——前端据此提示重新登录
-    self_revoked = bool(changed_pwd and username == user.get('username'))
-    return {
-        'username': target['username'],
-        'role': target.get('role', 'viewer'),
-        'sessions_revoked': changed_pwd or changed_role,
-        'relogin_required': self_revoked,
-    }
+        changed = changed_pwd or changed_role or changed_name
+        if changed_name:
+            target['username'] = new_name
+            # A formerly used username must not resurrect its old cookies.
+            target['sv'] = secrets.randbits(128)
+        elif changed:
+            try:
+                target['sv'] = int(target.get('sv') or 0) + 1
+            except (TypeError, ValueError):
+                target['sv'] = 1
+
+        security.save_users(cfg)
+        if (changed_pwd or changed_name) and username == 'admin':
+            security.clear_initial_password_file()
+        if changed:
+            parts = []
+            if changed_name:
+                parts.append(f'用户名 {username} → {new_name}')
+            if changed_pwd:
+                parts.append('改密码')
+            if changed_role:
+                parts.append('改角色')
+            ip = client_ip(request)
+            security.audit(user, 'update_user', username,
+                           '、'.join(parts) + f'；来源 {ip}', ip=ip)
+        return {
+            'username': target['username'],
+            'role': target.get('role', 'viewer'),
+            'sessions_revoked': changed,
+            'relogin_required': bool(changed and username == user.get('username')),
+        }
 
 
 @router.delete('/users/{username}')
 def delete_user(username: str, request: Request,
                 user: dict = Depends(security.require_session_admin)) -> dict:
-    cfg = security.load_users()
-    users = cfg.get('users', [])
-    target = next((u for u in users if u.get('username') == username), None)
-    if not target:
-        raise HTTPException(status_code=404, detail='用户不存在')
-    admins = [u for u in users if u.get('role') == 'admin']
-    if target.get('role') == 'admin' and len(admins) <= 1:
-        raise HTTPException(status_code=400, detail='至少保留一个管理员')
-    if target.get('username') == user.get('username'):
-        raise HTTPException(status_code=400, detail='不能删除当前登录用户')
-    cfg['users'] = [u for u in users if u.get('username') != username]
-    security.save_users(cfg)
-    if target.get('username') == 'admin':
-        # 被删掉的就是初始账号，那份明文初始密码也随之失效。
-        security.clear_initial_password_file()
-    security.audit(user, 'delete_user', username, f'来源 {client_ip(request)}')
-    return {'ok': True}
+    with security.users_lock:
+        cfg = security.load_users()
+        users = cfg.get('users', [])
+        target = next((u for u in users if u.get('username') == username), None)
+        if not target:
+            raise HTTPException(status_code=404, detail='用户不存在')
+        admins = [u for u in users if u.get('role') == 'admin']
+        if target.get('role') == 'admin' and len(admins) <= 1:
+            raise HTTPException(status_code=400, detail='至少保留一个管理员')
+        if target.get('username') == user.get('username'):
+            raise HTTPException(status_code=400, detail='不能删除当前登录用户')
+        cfg['users'] = [u for u in users if u.get('username') != username]
+        security.save_users(cfg)
+        if target.get('username') == 'admin':
+            # 被删掉的就是初始账号，那份明文初始密码也随之失效。
+            security.clear_initial_password_file()
+        security.audit(user, 'delete_user', username, f'来源 {client_ip(request)}')
+        return {'ok': True}
 
 
 @router.get('/audit-logs')
