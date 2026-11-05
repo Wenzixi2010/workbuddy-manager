@@ -159,10 +159,12 @@ docker compose exec workbuddy-manager docker restart workbuddy2api
 
 - 使用当前国内/国际版本；国际模型请求会由服务端正确加上 `global:` 前缀。
 - 复用管理员聊天测试接口，消耗记在请求日志/用量里。
-- 走默认上游的公共账号池，不能借用已经绑定专属 Key 的账号；如果全是专属账号，测试可能失败。这**不是某个 Key 的绑定/配额测试**。
+- 默认走公共账号池；模型页可选默认上游中的指定账号（含专属账号）做管理员单次测试，失败不回退，且不修改 Key 权限。这**不是某个 Key 的绑定/配额测试**。
 - 关闭/取消弹窗会停止客户端等待，不能保证上游已经开始的生成不再消耗积分。
 - 模型测试不依赖 Docker socket：socket 解决的是重载和容器控制，不是调用模型。
 
 ## 7. 撤销 Docker 控制（可选）
 
 从 overlay 中删除 socket 挂载及对应 group_add，然后再执行 `docker compose up -d --no-deps --force-recreate workbuddy-manager`。保留原 overlay 的其它设置；不要误删数据挂载。面板将回到需在宿主机手动重启上游的模式。
+
+Key 列表新增绑定/可使用账号，模型可选指定账号；详细口径见 [账号范围与指定测试](key-account-list-and-tests.md)。

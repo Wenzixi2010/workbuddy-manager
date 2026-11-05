@@ -1,12 +1,13 @@
 /** One-click model tests share the administrator-only playground channel. */
 export const MODEL_TEST_PROMPT = 'Ciallo';
 
-export function modelTestRequest(model: string, realm: 'cn' | 'global') {
+export function modelTestRequest(model: string, realm: 'cn' | 'global', accountId?: string) {
   return {
     model,
     realm,
     stream: false,
     messages: [{role: 'user', content: MODEL_TEST_PROMPT}],
+    ...(accountId ? {account_id: accountId} : {}),
   };
 }
 

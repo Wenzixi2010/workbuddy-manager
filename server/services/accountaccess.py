@@ -127,20 +127,26 @@ def set_policy(group: dict, aid: str, ids: list[int]) -> None:
                    (directory(group), aid))
 
 
-def scope(key: dict | None, group: dict) -> dict | None:
+def scope_from_rules(key: dict | None, access: dict[str, list[int]],
+                     owners: dict[str, list[int]]) -> dict | None:
+    """Shared permission decision for forwarding and credential-free list previews."""
     selected = list(dict.fromkeys((key or {}).get('account_ids') or []))
     kid = (key or {}).get('id')
     deny = set()
-    for aid, ids in policies(group).items():
+    for aid, ids in access.items():
         if ids and (not selected or kid not in ids):
             deny.add(aid)
-    for aid, ids in reservations(group).items():
+    for aid, ids in owners.items():
         if not selected or kid not in ids:
             deny.add(aid)
     if not selected and not deny:
         return None
     return {'version': 1, 'key': str(kid or 'admin'),
             'allow': selected if selected else None, 'deny': sorted(deny)}
+
+
+def scope(key: dict | None, group: dict) -> dict | None:
+    return scope_from_rules(key, policies(group), reservations(group))
 
 
 # Cache only the protocol capability, never account permissions or candidate sets.
@@ -151,6 +157,17 @@ async def forwarding_headers(key: dict | None, group: dict) -> dict[str, str]:
     rule = scope(key, group)
     if rule is None:
         return {}
+    return await _signed_scope_headers(rule, group)
+
+
+async def admin_test_headers(aid: str, group: dict) -> dict[str, str]:
+    # Explicit session-admin diagnostics can test dedicated accounts, without
+    # changing any persistent permission or falling back to the public pool.
+    return await _signed_scope_headers({'version': 1, 'key': 'admin-test',
+                                        'allow': [aid], 'deny': []}, group)
+
+
+async def _signed_scope_headers(rule: dict, group: dict) -> dict[str, str]:
     api_key = upstreamsvc.forward_api_key(group)
     if not api_key:
         raise HTTPException(503, '账号隔离要求上游配置 api_key，请先在设置中配置并更新上游')

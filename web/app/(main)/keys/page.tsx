@@ -14,6 +14,7 @@ import {PageSectionTabs} from '@/components/common/layout/PageSectionTabs';
 import {EmptyState} from '@/components/common/layout/EmptyState';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
 import {KeyAccountSelector} from '@/components/common/keys/KeyAccountSelector';
+import {KeyAccountScopeCell} from '@/components/common/keys/KeyAccountScopeCell';
 import {ModelWhitelistInput} from '@/components/common/keys/ModelWhitelistInput';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
@@ -621,6 +622,7 @@ export default function KeysPage() {
         </TabsList>
       </Tabs>
 
+      <p className="text-xs leading-5 text-muted-foreground">{t('keys.scopePermissionHint')}</p>
       <section className="overflow-hidden rounded-[20px] bg-muted">
         <Table>
           <TableHeader>
@@ -630,6 +632,8 @@ export default function KeysPage() {
               <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
               {/* 版本列紧跟状态：它和状态一样是「这把密钥的属性」，位置与账号页的列序一致 */}
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.realm')}</TableHead>
+              <TableHead className="text-[11px] text-muted-foreground">{t('keys.colBoundAccounts')}</TableHead>
+              <TableHead className="text-[11px] text-muted-foreground" title={t('keys.scopePermissionHint')}>{t('keys.colUsableAccounts')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.expiry')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.colIpModels')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.colUsedTokens')}</TableHead>
@@ -690,6 +694,8 @@ export default function KeysPage() {
                       </span>
                     )}
                   </TableCell>
+                  <TableCell className="align-top"><KeyAccountScopeCell apiKey={k} kind="bound" /></TableCell>
+                  <TableCell className="align-top"><KeyAccountScopeCell apiKey={k} kind="usable" /></TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {k.expires_at ? fmtDateTime(k.expires_at) : t('keys.neverExpires')}
                   </TableCell>

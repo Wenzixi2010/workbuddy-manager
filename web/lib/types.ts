@@ -441,7 +441,27 @@ export interface UpstreamEndpoint {
   updated_at?: number | null;
 }
 
+/** Permission metadata only; never contains account tokens or Key plaintext. */
+export interface KeyAccountSummary {
+  id: string;
+  uid: string;
+  name: string;
+  realm: 'cn' | 'global';
+  exists: boolean;
+  disabled: boolean;
+  expired: boolean;
+  invalid: boolean;
+}
+
+export interface KeyAccountAccess {
+  status: 'ok' | 'missing_upstream' | 'no_directory' | 'unreadable';
+  bound: KeyAccountSummary[];
+  usable: KeyAccountSummary[];
+  upstream_enabled: boolean;
+}
+
 export interface ApiKey {
+  account_access?: KeyAccountAccess;
   account_ids?: string[];
   bind_mode?: 'whitelist' | 'exclusive';
   id: number;

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import config, db, keysvc, security, upstreamsvc
-from ..services import accountaccess, keyexport, keyimport, modelcatalog, modelmap
+from ..services import accountaccess, keyaccounts, keyexport, keyimport, modelcatalog, modelmap
 from ..iputil import client_ip
 
 router = APIRouter(prefix='/api/keys', tags=['keys'])
@@ -143,7 +143,7 @@ def check_models(body: WhitelistCheckIn,
 
 @router.get('')
 def list_keys(user: dict = Depends(security.current_user)) -> list[dict]:
-    return keysvc.list_keys()
+    return keyaccounts.annotate(keysvc.list_keys())
 
 
 @router.post('')

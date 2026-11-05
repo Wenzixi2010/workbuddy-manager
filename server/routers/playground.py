@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 from .. import config, security, upstreamsvc
 from ..iputil import client_ip
 from . import gateway
+from ..services import accountaccess, wb2api
+from pathlib import Path
 
 router = APIRouter(prefix='/api/playground', tags=['playground'])
 
@@ -36,6 +38,8 @@ class ChatIn(BaseModel):
     # 测试台若只在界面上切了版本、请求却发裸名，会选到国内版账号池，
     # 出现「切到国际版却调用国内模型」的错配。这里据此给模型名加前缀。
     realm: str = Field(default='cn', max_length=16)
+    # One-shot admin diagnostic; not a Key scope and never changes saved rules.
+    account_id: str | None = Field(default=None, max_length=96)
 
 
 def _qualified_model(model: str, realm: str) -> str:
@@ -81,7 +85,25 @@ async def chat(body: ChatIn, request: Request, user: dict = Depends(security.req
         # 让上游在末帧返回 usage（含 credit），界面据此显示本次消耗
         payload['stream_options'] = {'include_usage': True}
 
-    headers = await gateway._scoped_upstream_headers(upstream, None)
+    if body.account_id:
+        if user.get('_token_id') is not None or getattr(request.state, 'token_id', None) is not None:
+            raise HTTPException(403, '指定账号测试请使用管理员会话，不接受 API Token')
+        if not upstream.get('auth_dir'):
+            raise HTTPException(409, '默认上游未配置账号目录，无法指定账号测试')
+        account = next((a for a in wb2api.list_auth_accounts(Path(upstream['auth_dir']))
+                        if accountaccess.identity(a) == body.account_id), None)
+        if account is None:
+            raise HTTPException(404, '测试账号不存在或不属于默认上游，请刷新账号列表')
+        requested_realm = 'global' if model_sent.lower().startswith('global:') else 'cn'
+        if account.get('realm') != realm or requested_realm != realm:
+            raise HTTPException(400, '测试账号、模型和当前版本不一致，请重新选择')
+        if account.get('disabled_by_panel') or account.get('is_expired') or account.get('invalid_reason'):
+            raise HTTPException(409, '测试账号已停用、凭据过期或无法加载，请先修复该账号')
+        headers = gateway._upstream_headers(upstream)
+        headers.update(await accountaccess.admin_test_headers(body.account_id, upstream))
+        security.audit(user, 'model.account_test', body.account_id, f'model={model_sent}', ip=ip)
+    else:
+        headers = await gateway._scoped_upstream_headers(upstream, None)
     url = upstream["base_url"] + gateway._scoped_path("/v1/chat/completions", headers)
 
     client = config.http_client(config.UPSTREAM_TIMEOUT, connect=5)

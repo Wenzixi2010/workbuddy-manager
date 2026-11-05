@@ -462,8 +462,8 @@ export const modelApi = {
   catalog: (realm: Realm = 'cn', force = false) =>
     get<ModelCatalog>('/api/model-catalog', {realm, force}),
   /** Fixed Ciallo prompt; authenticated cookies and deployment base path come from http. */
-  test: async (model: string, realm: Realm, signal?: AbortSignal) => {
-    const response = await http.post<unknown>('/api/playground/chat', modelTestRequest(model, realm), {
+  test: async (model: string, realm: Realm, signal?: AbortSignal, accountId?: string) => {
+    const response = await http.post<unknown>('/api/playground/chat', modelTestRequest(model, realm, accountId), {
       timeout: 180000, signal,
     });
     return parseModelTestResponse(response.data);

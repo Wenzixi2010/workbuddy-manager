@@ -44,6 +44,7 @@ async function prepare(role='admin', viewport={width: 1440, height: 1000}) {
     let status = 200;
     if (pathname === '/api/me') data = {username: role === 'admin' ? 'admin' : 'guest', role};
     else if (pathname === '/api/model-catalog') data = catalog;
+    else if (pathname === '/api/accounts') data = {manageable:true,accounts:[{account_id:'cn:alice',uid:'alice',nickname:'Alice account',realm:'cn',file:'workbuddy-alice.json',is_expired:false,disabled_by_panel:false,expires_at:4102444800},{account_id:'global:bob',uid:'bob',nickname:'Bob global',realm:'global',file:'workbuddy-bob.json',is_expired:false,disabled_by_panel:false,expires_at:4102444800}]};
     else if (pathname === '/api/system/changelog') data = {version: 'test', items: []};
     else if (pathname === '/api/playground/chat') {
       requests.push(route.request().postDataJSON());
@@ -74,6 +75,15 @@ try {
   await page.waitForTimeout(500); // allow the dialog's opening animation to settle
   await page.screenshot({path: path.join(shots, 'model-test-desktop.png'), fullPage: true});
   await dialog.getByRole('button', {name: '关闭', exact: true}).click();
+  await page.getByRole('combobox',{name:'测试账号',exact:true}).click();
+  await page.getByRole('option',{name:'Alice account · cn:alice',exact:true}).click();
+  await testButton.click();
+  await dialog.getByText('测试成功',{exact:true}).waitFor();
+  assert.equal(requests.at(-1).account_id,'cn:alice');
+  await dialog.getByText('测试账号: Alice account · cn:alice',{exact:true}).waitFor();
+  await dialog.getByRole('button',{name:'关闭',exact:true}).click();
+  await page.getByRole('combobox',{name:'测试账号',exact:true}).click();
+  await page.getByRole('option',{name:'默认 · 公共账号池',exact:true}).click();
   for (const [nextMode, message] of [['error200', 'Model quota exceeded'], ['httpError', 'No healthy public accounts'], ['empty', '上游未返回模型文本，请检查账号和模型可用性。']]) {
     mode = nextMode;
     await testButton.click();
@@ -85,6 +95,7 @@ try {
   await testButton.click();
   await dialog.getByText('测试成功', {exact: true}).waitFor();
   assert.equal(requests.at(-1).realm, 'global');
+  assert.equal(requests.at(-1).account_id,undefined,'realm change resets the selected account');
   await dialog.getByRole('button', {name: '关闭', exact: true}).click();
   mode = 'slow';
   const before = requests.length;
@@ -112,7 +123,7 @@ try {
   assert.equal(await viewer.page.getByRole('button', {name: '测试 GLM Test', exact: true}).count(), 0);
   await viewer.context.close();
   assert.deepEqual(pageErrors, [], 'no browser runtime errors');
-  console.log('PASS: fixed prompt, replies/credits, HTTP/200/empty failures, global realm, double-click, cancellation, mobile and viewer.');
+  console.log('PASS: fixed prompt, account selection and realm reset, replies/credits, HTTP/200/empty failures, global realm, double-click, cancellation, mobile and viewer.');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

@@ -36,3 +36,8 @@ test('HTTP 200 error envelopes and missing/empty replies are failures', () => {
     assert.throws(() => parseModelTestResponse(value), /models.testEmpty/);
   }
 });
+
+test('explicit account is included only when selected', () => {
+  assert.equal(modelTestRequest('glm-test', 'cn', 'cn:alice').account_id, 'cn:alice');
+  assert.equal(modelTestRequest('glm-test', 'cn').account_id, undefined);
+});

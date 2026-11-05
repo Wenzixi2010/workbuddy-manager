@@ -29,3 +29,7 @@
 定位 SSH/DNS/GitHub/Registry/npm/PyPI/代理/反代证书中的失败链路，收集脱敏错误告知用户。用户说代理/访问问题由他解决：停止该步骤等待修复，不擅自换代理/忽略证书。安全的其它只读检查可继续。
 
 不要启用官方一键更新/自动更新，避免覆盖定制功能。恢复边界见 docs/sqlite-export.md。
+
+## 后续新增功能
+
+Key 列表显示绑定账号及权限范围内可用账号；模型页支持默认上游指定单账号 Ciallo 测试，不回退、只限管理员会话。参见 docs/key-account-list-and-tests.md。部署后校验列表字段 account_access 和 ChatIn.account_id；真实测试一条即可，不反复耗积分。
