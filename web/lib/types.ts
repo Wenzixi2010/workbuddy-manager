@@ -390,6 +390,20 @@ export interface CatalogSummary {
  */
 export type CatalogSourceKind = 'tencent' | 'upstream' | 'none';
 
+/** Actual account-pool saturation for the selected realm, not provider-wide model load. */
+export interface ModelPoolLoad {
+  realm: 'cn' | 'global';
+  source: 'upstream_status';
+  observed_at: number;
+  total: number;
+  healthy: number;
+  cooling: number;
+  disabled: number;
+  full_accounts: number;
+  in_flight: number;
+  full_percent: number | null;
+}
+
 export interface ModelCatalog {
   models: CatalogModel[];
   source: CatalogSourceKind;

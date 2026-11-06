@@ -1115,7 +1115,7 @@ def _parse_model_payload(data: object, realm: Realm) -> tuple[dict[str, dict], l
             'description': str(m.get('descriptionZh') or '').strip(),
             # 积分倍率原文（如 "x0.05"）：同一个 prompt 在不同模型上的扣费倍率，
             # 用户据此挑更省的模型。仅展示，不参与选号（与上游口径一致）。
-            'credits': str(m.get('credits') or '').strip(),
+            'credits': str(m['credits']).strip() if m.get('credits') is not None else '',
             'vendor': str(m.get('vendor') or '').strip(),
             'tags': [str(t) for t in tags if t],
             'is_default': bool(m.get('isDefault')),

@@ -17,6 +17,7 @@ import {PageHeader} from '@/components/common/layout/PageHeader';
 import {PageSectionTabs} from '@/components/common/layout/PageSectionTabs';
 import {EmptyState} from '@/components/common/layout/EmptyState';
 import {StatCard} from '@/components/common/layout/StatCard';
+import {ModelPoolLoadCard} from '@/components/common/models/ModelPoolLoadCard';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {Button} from '@/components/ui/button';
@@ -389,6 +390,8 @@ export default function ModelsPage() {
         </div>
       )}
 
+      <ModelPoolLoadCard realm={realm} />
+
       {/* 统计卡 */}
       {summary && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -505,6 +508,7 @@ export default function ModelsPage() {
                 <TableHeader>
                   <TableRow className="border-b border-border/60 hover:bg-transparent">
                     <TableHead className="pl-4 text-[11px] text-muted-foreground">{t('models.colModel')}</TableHead>
+                    <TableHead className="text-[11px] text-muted-foreground">{t('models.colMultiplier')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colContext')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colMaxOutput')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colEfforts')}</TableHead>
@@ -528,6 +532,9 @@ export default function ModelsPage() {
                             <span className="font-mono text-xs font-medium">{m.id}</span>
                           )}
                         </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs tabular-nums text-muted-foreground" title={t('models.creditRatioTitle')}>
+                        {m.credits || <span title={t('models.multiplierUnknown')}>—</span>}
                       </TableCell>
                       <TableCell className="text-xs tabular-nums text-muted-foreground">
                         {fmtCtx(m.context_length)}
@@ -560,18 +567,6 @@ export default function ModelsPage() {
                       </TableCell>
                       <TableCell className="pr-4">
                         <div className="flex flex-wrap items-center justify-end gap-1.5">
-                          {/* 积分倍率：同一 prompt 在不同模型上的扣费倍率，
-                              挑「省积分」的模型时最有用的一项。上游把它拼进
-                              description 前缀，我们单独展示（更清楚） */}
-                          {m.credits && (
-                            <Badge
-                              variant="secondary"
-                              className="rounded-md font-mono text-[10px]"
-                              title={t('models.creditRatioTitle')}
-                            >
-                              {m.credits}
-                            </Badge>
-                          )}
                           {(
                             <Badge variant="secondary" className="rounded-md text-[10px]" title={t('models.visionTitle') + ' · ' + (m.native_modality_source || '') + ' ' + (m.native_modality_verified_at || '')}>
                               {t(m.native_modality === 'multimodal' ? 'models.vision' : m.native_modality === 'text' ? 'models.visionNo' : m.native_modality === 'router' ? 'models.visionRouter' : 'models.visionUnknown')}

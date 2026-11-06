@@ -11,10 +11,12 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import time
+
+from fastapi import APIRouter, Depends, HTTPException
 
 from .. import security
-from ..services import modelcatalog
+from ..services import modelcatalog, wb2api
 
 router = APIRouter(prefix='/api', tags=['models'])
 
@@ -40,3 +42,34 @@ async def model_catalog(
         'realm': r,
         'summary': modelcatalog.summarize(models),
     }
+
+
+@router.get('/model-pool-load')
+async def model_pool_load(realm: str = 'cn', user: dict = Depends(security.current_user)) -> dict:
+    """Live realm-specific pool saturation, not invented per-model provider load.
+
+    /status is read-only and does not generate model requests or refresh balances.
+    Export only aggregate metrics; upstream account IDs/errors stay on the server.
+    """
+    r = 'global' if str(realm).strip().lower() == 'global' else 'cn'
+    status = await wb2api.get_status()
+    if not status.get('connected'):
+        raise HTTPException(503, '未能读取上游账号池状态，繁忙度未知')
+    raw = (status.get('realm_totals') or {}).get(r) if isinstance(status.get('realm_totals'), dict) else None
+    fields = ('total', 'healthy', 'cooling', 'disabled', 'in_flight_full')
+    if not isinstance(raw, dict) or any(type(raw.get(k)) is not int or raw[k] < 0 for k in fields):
+        raise HTTPException(503, '上游未提供完整的分版本并发统计，繁忙度未知')
+    accounts = status.get('accounts')
+    if not isinstance(accounts, list):
+        raise HTTPException(503, '上游未提供在途请求统计，繁忙度未知')
+    scoped = [a for a in accounts if isinstance(a, dict) and a.get('realm') == r]
+    if len(scoped) != raw['total'] or any(type(a.get('in_flight')) is not int or a['in_flight'] < 0 for a in scoped):
+        raise HTTPException(503, '上游在途请求统计不完整，繁忙度未知')
+    if raw['in_flight_full'] > raw['healthy'] or raw['healthy'] > raw['total']:
+        raise HTTPException(503, '上游并发统计不一致，繁忙度未知')
+    full, healthy = raw['in_flight_full'], raw['healthy']
+    return {'realm': r, 'source': 'upstream_status', 'observed_at': int(time.time()),
+            'total': raw['total'], 'healthy': healthy, 'cooling': raw['cooling'],
+            'disabled': raw['disabled'], 'full_accounts': full,
+            'in_flight': sum(a['in_flight'] for a in scoped),
+            'full_percent': round(full * 100 / healthy, 1) if healthy else None}

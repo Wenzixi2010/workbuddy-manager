@@ -202,7 +202,7 @@ def _decorate(items: list[dict], realm: str = 'cn') -> list[dict]:
             'description': str(m.get('description') or ''),
             # 积分倍率（如 "x0.05"）：同一 prompt 在不同模型上的扣费倍率，
             # 用户据此挑更省的模型。仅展示，不参与选号（与上游口径一致）。
-            'credits': str(m.get('credits') or ''),
+            'credits': str(m['credits']) if m.get('credits') is not None else '',
             'vendor': str(m.get('vendor') or ''),
             'tags': list(m.get('tags') or []),
             'is_default': bool(m.get('is_default')),

@@ -300,6 +300,10 @@ export function ModelWhitelistInput({
                           {picked && <Check className="h-2.5 w-2.5" />}
                         </span>
                         <span className="min-w-0 flex-1 truncate font-mono">{m.id}</span>
+                        <span className="shrink-0 rounded-md bg-primary/8 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-primary"
+                          title={m.credits ? t('models.creditRatioTitle') : t('models.multiplierUnknown')}>
+                          {m.credits || '—'}
+                        </span>
                         {isFree(m) && (
                           <span className="shrink-0 rounded-full bg-emerald-500/15 px-1.5 text-[10px] text-emerald-700 dark:text-emerald-300">
                             {t('keys.freeBadge')}
