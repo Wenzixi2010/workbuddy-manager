@@ -390,18 +390,14 @@ export interface CatalogSummary {
  */
 export type CatalogSourceKind = 'tencent' | 'upstream' | 'none';
 
-/** Actual account-pool saturation for the selected realm, not provider-wide model load. */
-export interface ModelPoolLoad {
+export type ModelBusyLevel = 'idle' | 'normal' | 'busy' | 'congested' | 'unavailable' | 'unknown';
+export interface ModelBusyResponse {
   realm: 'cn' | 'global';
-  source: 'upstream_status';
-  observed_at: number;
-  total: number;
-  healthy: number;
-  cooling: number;
-  disabled: number;
-  full_accounts: number;
-  in_flight: number;
-  full_percent: number | null;
+  source: 'provider_chat_busy';
+  levels: Record<string, ModelBusyLevel>;
+  observed_at: number | null;
+  cached: boolean;
+  partial: boolean;
 }
 
 export interface ModelCatalog {

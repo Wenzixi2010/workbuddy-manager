@@ -17,7 +17,8 @@ import {PageHeader} from '@/components/common/layout/PageHeader';
 import {PageSectionTabs} from '@/components/common/layout/PageSectionTabs';
 import {EmptyState} from '@/components/common/layout/EmptyState';
 import {StatCard} from '@/components/common/layout/StatCard';
-import {ModelPoolLoadCard} from '@/components/common/models/ModelPoolLoadCard';
+import {ModelBusyBadge} from '@/components/common/models/ModelBusyBadge';
+import {useHeartbeat} from '@/lib/use-heartbeat';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {Button} from '@/components/ui/button';
@@ -265,6 +266,14 @@ export default function ModelsPage() {
   }, [reload]);
 
   const models = data?.models ?? [];
+  const modelIds = models.map(m => m.id);
+  const {values: busyValues, errors: busyErrors, isInitialLoading: busyLoading, isRefreshing: busyRefreshing, reload: refreshBusy} = useAsyncAll({
+    busy: () => modelApi.busy(realm, modelIds),
+  }, [realm, modelIds.join('|')]);
+  useHeartbeat(() => { if (modelIds.length) void refreshBusy(); }, 30000);
+  const busyData = busyValues.busy;
+  const busyFailed = !!busyErrors.busy || busyData?.realm !== realm;
+
 
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
@@ -390,7 +399,17 @@ export default function ModelsPage() {
         </div>
       )}
 
-      <ModelPoolLoadCard realm={realm} />
+      <section className="flex flex-wrap items-center justify-between gap-2 rounded-[16px] bg-muted px-3.5 py-2.5 text-xs">
+        <div className="space-y-1">
+          <p className="font-medium">{t('models.busySource')}</p>
+          <p className="text-[11px] text-muted-foreground">{t('models.busyHint')}</p>
+          {busyFailed && !!busyErrors.busy && <p role="status" className="text-[11px] text-amber-600 dark:text-amber-400">{errText(busyErrors.busy)}</p>}
+          {!busyFailed && busyData?.observed_at && <p className="text-[10px] text-muted-foreground">{t('models.busyObserved', {time: new Date(busyData.observed_at * 1000).toLocaleTimeString()})}</p>}
+        </div>
+        <Button size="sm" variant="outline" disabled={busyRefreshing || !modelIds.length} onClick={() => { void refreshBusy(); }}>
+          {busyRefreshing ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : <RefreshCw className="mr-1 size-3.5" />}{t('models.busyRefresh')}
+        </Button>
+      </section>
 
       {/* 统计卡 */}
       {summary && (
@@ -509,6 +528,7 @@ export default function ModelsPage() {
                   <TableRow className="border-b border-border/60 hover:bg-transparent">
                     <TableHead className="pl-4 text-[11px] text-muted-foreground">{t('models.colModel')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colMultiplier')}</TableHead>
+                    <TableHead className="text-[11px] text-muted-foreground">{t('models.colBusy')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colContext')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colMaxOutput')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colEfforts')}</TableHead>
@@ -536,6 +556,7 @@ export default function ModelsPage() {
                       <TableCell className="font-mono text-xs tabular-nums text-muted-foreground" title={t('models.creditRatioTitle')}>
                         {m.credits || <span title={t('models.multiplierUnknown')}>—</span>}
                       </TableCell>
+                      <TableCell><ModelBusyBadge level={busyFailed ? undefined : busyData?.levels[m.id]} loading={busyLoading} /></TableCell>
                       <TableCell className="text-xs tabular-nums text-muted-foreground">
                         {fmtCtx(m.context_length)}
                       </TableCell>

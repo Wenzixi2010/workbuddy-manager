@@ -41,7 +41,7 @@ import type {
   KeyImportStatus,
   Me,
   ModelCatalog,
-  ModelPoolLoad,
+  ModelBusyResponse,
   ModelGroup,
   PricingInfo,
   ModelListResponse,
@@ -463,7 +463,7 @@ export const modelApi = {
   /** 指定版本的模型目录；force=true 绕过 5 分钟缓存 */
   catalog: (realm: Realm = 'cn', force = false) =>
     get<ModelCatalog>('/api/model-catalog', {realm, force}),
-  poolLoad: (realm: Realm) => get<ModelPoolLoad>('/api/model-pool-load', {realm}),
+  busy: (realm: Realm, models: string[]) => post<ModelBusyResponse>('/api/model-busy', {realm, models}),
   /** Fixed Ciallo prompt; authenticated cookies and deployment base path come from http. */
   test: async (model: string, realm: Realm, signal?: AbortSignal, accountId?: string) => {
     const response = await http.post<unknown>('/api/playground/chat', modelTestRequest(model, realm, accountId), {

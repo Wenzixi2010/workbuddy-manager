@@ -1688,3 +1688,39 @@ async def claim_trial(auth: dict) -> tuple[bool, str]:
         return False, f'领取 trial 失败 code={code}'
     except Exception as exc:  # noqa: BLE001
         return False, f'领取 trial 异常: {err_text(exc)}'
+
+
+MODEL_BUSY_LEVELS = frozenset({'idle', 'normal', 'busy', 'congested', 'unavailable', 'unknown'})
+
+
+async def fetch_model_busy(auth: dict, models: list[str]) -> tuple[bool, dict[str, str]]:
+    """Official provider busy observation, not local requests/account saturation.
+
+    POST /v2/chat/busy accepts <=50 names per batch. No completions or fallback
+    values: missing/unrecognised entries remain unknown to the caller.
+    """
+    realm = realm_of(auth)
+    token = str(auth.get('access_token') or '')
+    if not token:
+        return False, {}
+    out: dict[str, str] = {}
+    try:
+        async with _account_http_client(auth) as client:
+            for start in range(0, len(models), 50):
+                batch = models[start:start + 50]
+                response = await client.post(chat_base(realm) + '/v2/chat/busy',
+                    headers=_hdr(realm, token, str(auth.get('uid') or '')),
+                    json={'models': batch})
+                code, data = _envelope(response)
+                if response.status_code >= 400 or code != 0 or not isinstance(data, list):
+                    return False, out
+                known = set(batch)
+                for row in data:
+                    if not isinstance(row, dict):
+                        continue
+                    mid, level = row.get('model'), row.get('busy_level')
+                    if isinstance(mid, str) and mid in known and isinstance(level, str) and level in MODEL_BUSY_LEVELS:
+                        out[mid] = level
+    except Exception:  # No network exception bodies/credential-bearing URLs in responses.
+        return False, out
+    return True, out
