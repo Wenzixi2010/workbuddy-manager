@@ -73,6 +73,12 @@ services:
       # WB_BASE_PATH: /workbuddy-manager
       # 反向代理在后面时，真实 IP 取自它覆盖写入的 X-Real-IP
       WB_TRUST_PROXY: "1"
+      # FRP TCP 穿透可独立启用 PROXY protocol v1/v2，默认关闭。
+      # 可信网段须填写面板实际看到的 frpc TCP 对端（容器中可能是宿主机网关）。
+      # 配置步骤见 docs/frp-proxy-protocol.md；不需要开启 WB_TRUST_PROXY。
+      WB_PROXY_PROTOCOL: ${WB_PROXY_PROTOCOL:-0}
+      WB_PROXY_PROTOCOL_TRUSTED_CIDRS: ${WB_PROXY_PROTOCOL_TRUSTED_CIDRS:-127.0.0.0/8,::1/128}
+      WB_PROXY_PROTOCOL_TIMEOUT_SECONDS: ${WB_PROXY_PROTOCOL_TIMEOUT_SECONDS:-5}
       # 生产环境不暴露 /docs 与 /openapi.json
       WB_ENABLE_DOCS: "0"
       # 出口代理（可选）：写在与本文件同目录的 .env 里即可，compose 用 ${} 取过来。

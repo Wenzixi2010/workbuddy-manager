@@ -15,13 +15,16 @@ WB_ADMIN_PASSWORD=admin123 \
 WB_DATA_DIR=./data \
 WB_AUTH_DIR=/opt/workbuddy2api/auths \
 WB2API_BASE=http://127.0.0.1:7863 \
-python -m uvicorn server.main:app --reload --port 7864
+python -m uvicorn server.main:app --reload --port 7864 --no-proxy-headers
 
 # 2) 前端（终端 B）—— next dev 会把 /api、/v1 反代到 :7864
 cd web
 npm install
 npm run dev                          # http://localhost:3000
 ```
+
+部署和调试 FRP PROXY protocol 时使用 `python -m server.serve --host 127.0.0.1 --port 7864`。
+上面的 Uvicorn 开发命令通过 `--no-proxy-headers` 让应用的可信代理设置统一处理真实 IP；原生 Uvicorn 命令不会解析 TCP 层 PROXY protocol。配置见 [FRP 真实 IP](frp-proxy-protocol.md)。
 
 > **要预览「打包后的界面」时必须用 `npm run build:export`**：静态导出只在
 > `NEXT_OUTPUT_EXPORT=1` 时开启，直接跑 `next build` 只会更新 `.next/`，而

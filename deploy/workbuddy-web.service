@@ -45,7 +45,7 @@ EnvironmentFile=-/opt/workbuddy-manager/.env
 # 直接暴露 7864 时，登录锁定、IP 管控的可信度都取决于转发头，而被打穿的
 # 常见入口就是裸 HTTP 的管理面。需要改回全网卡时把下面两处改成 0.0.0.0，
 # 并自担风险（服务端只会在日志里警告）。
-ExecStart=/usr/bin/python3 -m uvicorn server.main:app --host 127.0.0.1 --port 7864
+ExecStart=/usr/bin/python3 -m server.serve --host 127.0.0.1 --port 7864
 Restart=always
 RestartSec=3
 

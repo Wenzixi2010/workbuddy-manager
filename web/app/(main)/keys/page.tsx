@@ -605,7 +605,7 @@ export default function KeysPage() {
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.realm')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.expiry')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('modelGroups.colIp')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('keys.colUsedTokens')}</TableHead>
+              <TableHead className="text-[11px] text-muted-foreground">{t('keys.colUsage')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.colLastUsed')}</TableHead>
               {isAdmin && <TableHead className="pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
             </TableRow>
@@ -679,8 +679,7 @@ export default function KeysPage() {
                           : ratio >= 0.8
                             ? 'text-amber-600 dark:text-amber-400 font-medium'
                             : 'text-foreground';
-                      // 积分额度设了才显示积分那一行：没设的密钥（绝大多数）
-                      // 保持原来的单行 token 展示，不让默认视图变吵。
+                      // 每把密钥都显示实际已用积分；额度只决定是否附带上限与超额颜色。
                       const cRatio = k.quota_credit ? k.used_credit / k.quota_credit : 0;
                       const cTone = cRatio >= 1
                         ? 'text-red-600 dark:text-red-400 font-medium'
@@ -692,18 +691,16 @@ export default function KeysPage() {
                           <span className={tone}>
                             {fmtNumber(k.used_tokens)}
                             {k.quota ? ` / ${fmtNumber(k.quota)}` : ''}
+                            {' Token'}
                           </span>
-                          {!!k.quota_credit && (
-                            <span
-                              className={`text-[10px] ${cTone}`}
-                              title={t('keys.quotaCredit')}
-                            >
-                              {t('keys.creditUsed', {
-                                used: String(k.used_credit),
-                                quota: String(k.quota_credit),
-                              })}
-                            </span>
-                          )}
+                          <span className={`text-[10px] ${cTone}`}>
+                            {k.quota_credit
+                              ? t('keys.creditUsed', {
+                                  used: String(k.used_credit ?? 0),
+                                  quota: String(k.quota_credit),
+                                })
+                              : t('keys.creditUsedTotal', {used: String(k.used_credit ?? 0)})}
+                          </span>
                         </span>
                       );
                     })()}

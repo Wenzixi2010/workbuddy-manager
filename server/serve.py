@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import socket
 import sys
+from pathlib import Path
 
 import uvicorn
 
@@ -50,15 +51,34 @@ def main() -> int:
     parser.add_argument('--env-file', default='.env')
     args = parser.parse_args()
 
+    # 必须先载入 .env，再导入运行配置：否则 PROXY protocol 开关会被冻结为
+    # 默认值。Docker 注入环境变量且通常没有 .env，默认缺文件时保持可启动。
+    env_path = Path(args.env_file) if args.env_file else None
+    if env_path is not None and env_path.is_file():
+        from dotenv import load_dotenv
+        load_dotenv(env_path, override=False)
+    elif args.env_file and args.env_file != '.env':
+        parser.error(f'环境文件不存在：{args.env_file}')
+
+    from . import config as settings
+    http = 'server.proxyprotocol:ProxyProtocolH11' if settings.PROXY_PROTOCOL else 'auto'
+    # HTTP 转发头只交给 iputil 的可信对端校验。Uvicorn 默认的代理中间件会在
+    # 此前重写 scope.client，甚至覆盖 PROXY protocol 已验证的客户端地址。
+    server_config = uvicorn.Config(
+        'server.main:app', host=args.host, port=args.port,
+        proxy_headers=False, http=http,
+        # 当前应用没有 WebSocket 路由；禁用它的独立协议切换，避免丢失 TCP
+        # 解析器保留的来源和元信息。普通 HTTP / SSE 均保持工作。
+        ws='none' if settings.PROXY_PROTOCOL else 'auto',
+    )
+
     if is_ipv6_wildcard(args.host):
         # 自己建 socket 再交给 uvicorn：uvicorn 的 --host 路径无法表达双栈
         sock = make_dual_stack_socket(args.port)
-        config = uvicorn.Config('server.main:app', env_file=args.env_file)
-        uvicorn.Server(config).run(sockets=[sock])
+        uvicorn.Server(server_config).run(sockets=[sock])
         return 0
 
-    uvicorn.run('server.main:app', host=args.host, port=args.port,
-                env_file=args.env_file)
+    uvicorn.Server(server_config).run()
     return 0
 
 

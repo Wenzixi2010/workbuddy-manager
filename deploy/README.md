@@ -342,7 +342,7 @@ WB_BASE_PATH=/workbuddy-manager
 > `WB_GITHUB_MIRROR`、新账号默认线路
 > `WB_DEFAULT_ACCOUNT_PROXY` 等）**写进安装目录的 `.env` 即可**：容器部署由 compose 的
 > `${}` 取过去，systemd 部署由单元里的 `EnvironmentFile=` 读进来，Windows 原生由
-> 启动脚本交给面板（`uvicorn --env-file .env`）。
+> 启动脚本交给面板（`python -m server.serve --env-file .env`）。
 
 **③ 反向代理：两种 `proxy_pass` 写法都可以**
 

@@ -251,6 +251,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ithtelab/workbuddy-manager/m
 - [开发与架构](docs/development.md) —— 本地开发、架构、目录结构
 - [安全说明](docs/security-notes.md) —— 威胁模型与加固
 - [部署指南](deploy/README.md) —— 反向代理、HTTPS、Windows 原生、一键更新
+- [FRP 真实 IP](docs/frp-proxy-protocol.md) —— TCP 穿透的 PROXY protocol v1/v2 与可信对端配置
 - [账号出口线路](docs/account-proxy-routes.md) —— 每个账号走不同代理出口
 - [API 令牌](docs/api-tokens.md) —— 只读令牌与作用域
 - [页面监控](docs/watchdog.md) —— 上游网页改版检测、LLM 判读与邮件 / QQ 通知

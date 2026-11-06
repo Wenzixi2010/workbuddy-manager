@@ -123,6 +123,22 @@ TRUSTED_PROXY_CIDRS = [
         '127.0.0.0/8,::1/128',
     ).split(',') if c.strip()
 ]
+# FRP / HAProxy 在 HTTP 之前发送的 TCP PROXY protocol（v1、v2）。
+# 与 HTTP 转发头的信任设置分开：只信实际连接到本监听器的 FRP 对端。
+# Docker 发布端口上的宿主机 FRP 通常显示为 bridge 网关，应显式填那个单 IP，
+# 不要直接信任整个 Docker / 局域网网段。
+PROXY_PROTOCOL = _env_bool('WB_PROXY_PROTOCOL', False)
+PROXY_PROTOCOL_TRUSTED_CIDRS = [
+    c.strip() for c in _env(
+        'WB_PROXY_PROTOCOL_TRUSTED_CIDRS',
+        '127.0.0.0/8,::1/128',
+    ).split(',') if c.strip()
+]
+PROXY_PROTOCOL_TIMEOUT_SECONDS = min(30, max(
+    1, _env_int('WB_PROXY_PROTOCOL_TIMEOUT_SECONDS', 5),
+))
+# v2 可带 TLV；限制整个头（包括固定 16 字节）而不是无限等待对端宣称的长度。
+PROXY_PROTOCOL_MAX_HEADER_BYTES = 4096
 # 是否暴露 /docs、/openapi.json、/redoc。生产环境建议关闭（默认关闭）。
 ENABLE_DOCS = _env('WB_ENABLE_DOCS', '0') == '1'
 # 入站访问日志（安全页的「IP 访问日志」）是否记录**放行**的请求。

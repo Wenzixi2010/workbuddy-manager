@@ -384,7 +384,10 @@ def cookie_secure(request: Request) -> bool:
         return False
     proto = request.scope.get('scheme') or request.url.scheme
     peer = request.client.host if request.client else ''
-    if config.TRUST_PROXY and _is_trusted_proxy(peer):
+    proxy_protocol = request.scope.get('extensions', {}).get('workbuddy.proxy_protocol')
+    # FRP 的 TCP 头验证的是客户端地址，不代表它覆盖了 HTTP 转发头。
+    # 即使该客户端恰好为回环 / 私网地址，也不能用它授权 X-Forwarded-Proto。
+    if config.TRUST_PROXY and not isinstance(proxy_protocol, dict) and _is_trusted_proxy(peer):
         proto = request.headers.get('x-forwarded-proto', proto)
     return proto == 'https'
 

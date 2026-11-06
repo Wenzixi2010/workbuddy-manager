@@ -331,7 +331,7 @@ sed -e "s#/opt/workbuddy-manager#${APP_DIR}#g" \
 # 若 venv 可用，改写 ExecStart 指向 venv（监听地址维持模板里的 127.0.0.1：
 # 公网访问一律经反向代理，直接暴露管理面是被打穿的常见入口）
 if [ "$RT_PY" != "$PY" ]; then
-  sed -i "s#^ExecStart=.*#ExecStart=${APP_DIR}/venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port ${MANAGER_PORT}#" \
+  sed -i "s#^ExecStart=.*#ExecStart=${APP_DIR}/venv/bin/python -m server.serve --host 127.0.0.1 --port ${MANAGER_PORT}#" \
     /etc/systemd/system/workbuddy-web.service
 fi
 

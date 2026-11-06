@@ -56,14 +56,29 @@ def client_ip(request: Request) -> str:
     以及登录失败按 IP 锁定 —— 全部 IP 类管控形同虚设。
 
     取值优先级（按可信度）：
-      1) 仅当 **TCP 对端来自可信代理网段** 时，才采信 `X-Real-IP`
-      2) 同上条件下，从 `X-Forwarded-For` **右往左**数第 N 个（N = 可信跳数）；
+      1) TCP 监听器从可信 FRP 的 PROXY protocol 头验证出的来源
+      2) 仅当 **TCP 对端来自可信代理网段** 时，才采信 `X-Real-IP`
+      3) 同上条件下，从 `X-Forwarded-For` **右往左**数第 N 个（N = 可信跳数）；
          右侧是反代追加的真实地址，左侧才是可伪造部分
-      3) TCP 对端地址（可信度最高，永远可回退）
+      4) TCP 对端地址（永远可回退）
 
     若前面还挂了 CDN，请把 `WB_TRUSTED_PROXY_HOPS` 调成 CDN + 反代的层数，
     并把 `WB_TRUSTED_PROXY_CIDRS` 加上 CDN 的回源网段。
     """
+    verified = request.scope.get('extensions', {}).get('workbuddy.proxy_protocol')
+    if isinstance(verified, dict):
+        source = verified.get('source')
+        if isinstance(source, (tuple, list)) and len(source) == 2:
+            try:
+                addr = ipaddress.ip_address(source[0])
+                if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+                    addr = addr.ipv4_mapped
+                return str(addr)
+            except ValueError:
+                pass
+        # LOCAL / UNKNOWN 不提供用户地址；不能因此重新信任用户发来的 HTTP 头。
+        return request.client.host if request.client else '0.0.0.0'
+
     peer = request.client.host if request.client else ''
 
     if not config.TRUST_PROXY:
