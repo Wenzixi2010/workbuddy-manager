@@ -82,7 +82,7 @@ import {AccountWeightDialog} from '@/components/common/accounts/AccountWeightDia
 import {MoveAccountDialog} from '@/components/common/accounts/MoveAccountDialog';
 import {UpstreamFormDialog} from '@/components/common/upstreams/UpstreamFormDialog';
 import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingDialog';
-import {AccountModelLimitsDialog} from '@/components/common/accounts/AccountModelLimitsDialog';
+import {AccountModelLimitsPopover} from '@/components/common/accounts/AccountModelLimitsPopover';
 import {AccountTaskDialog} from '@/components/common/accounts/AccountTaskDialog';
 import {ReloginQueueDialog} from '@/components/common/accounts/ReloginQueue';
 import {ModelProbeDialog} from '@/components/common/accounts/ModelProbeDialog';
@@ -142,7 +142,6 @@ export default function AccountsPage() {
   // 权重写上游账号文件，混在一起容易让人以为「改了不用重启」。
   const [weightTarget, setWeightTarget] = useState<Account | null>(null);
   const [coolingTarget, setCoolingTarget] = useState<Account | null>(null);
-  const [modelLimitTarget, setModelLimitTarget] = useState<Account | null>(null);
   // 活动任务（单账号执行成长任务）的目标账号；null = 对话框关闭
   const [taskTarget, setTaskTarget] = useState<Account | null>(null);
   /** 账号 × 模型主动探测（issue #270） */
@@ -783,22 +782,6 @@ export default function AccountsPage() {
       <Badge variant="secondary" className="rounded-full text-emerald-600 dark:text-emerald-400">
         {label}
       </Badge>
-    );
-  }
-
-  /** 模型详情按需展开，避免长模型名或大量受限模型撑高账号行。 */
-  function renderModelLimit(a: Account) {
-    const limited = rateLimitedModels(a);
-    if (!limited.length) return null;
-    return (
-      <Button
-        variant="outline" size="sm"
-        className="h-auto max-w-full cursor-pointer whitespace-normal rounded-lg px-2 py-1 text-left text-[11px] text-amber-600 dark:text-amber-400"
-        aria-haspopup="dialog"
-        onClick={() => setModelLimitTarget(a)}
-      >
-        {t('accounts.modelLimitBadge', {extra: limited.length > 1 ? ` +${limited.length - 1}` : ''})}
-      </Button>
     );
   }
 
@@ -1554,7 +1537,7 @@ export default function AccountsPage() {
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
                   {renderStatus(a)}
-                  {renderModelLimit(a)}
+                  <AccountModelLimitsPopover account={a} />
                 </div>
               </div>
 
@@ -1637,10 +1620,8 @@ export default function AccountsPage() {
                   <div className="flex flex-wrap items-center gap-1.5">
                     {renderStatus(a)}
                   </div>
-                  {/* 状态与模型受限入口分行显示，详情点击展开。 */}
-                  {renderModelLimit(a) && (
-                    <div className="mt-1 max-w-full">{renderModelLimit(a)}</div>
-                  )}
+                  {/* 状态与模型受限入口分行显示，悬停阅读或点击固定浮层。 */}
+                  <AccountModelLimitsPopover account={a} className="mt-1" />
                 </TableCell>
                 <TableCell>{renderCredits(a)}</TableCell>
                 <TableCell>{renderExpiry(a)}</TableCell>
@@ -1790,11 +1771,6 @@ export default function AccountsPage() {
         onOpenChange={(open) => { if (!open) setCoolingTarget(null); }}
         onSuccess={reloadAll}
         upstreamId={groupId}
-      />
-      <AccountModelLimitsDialog
-        account={modelLimitTarget}
-        open={modelLimitTarget !== null}
-        onOpenChange={(open) => { if (!open) setModelLimitTarget(null); }}
       />
       <AccountTaskDialog
         account={taskTarget}

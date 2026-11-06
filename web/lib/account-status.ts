@@ -95,6 +95,10 @@ export function mergePoolStatus(
       manual_reason: typeof p.manual_reason === 'string' ? p.manual_reason : '',
       in_flight: typeof p.in_flight === 'number' ? p.in_flight : null,
       cooling: typeof p.cooling === 'boolean' ? p.cooling : null,
+      // 模型级限制也以这份实时快照为准；旧快照的已解除条目不能继续留在账号上。
+      rate_limited_models: Array.isArray(p.rate_limited_models)
+        ? p.rate_limited_models as Account['rate_limited_models']
+        : [],
       degrade_until: typeof p.degrade_until === 'string' ? p.degrade_until : null,
       consecutive_fails:
         typeof p.consecutive_fails === 'number' ? p.consecutive_fails : null,
@@ -135,18 +139,27 @@ export function isDegraded(a: Account): boolean {
  * **不能用 `cooling` 判**：那是账号级状态，模型级限流不会置位它。所以这里读台账，
  * 并且与 `isDegraded` 同一口径——以「截止时间是否在未来」为准，而不是「字段是否
  * 存在」：前端拿到的快照可能已经过时，字段还在、窗口早过了。
+ *
+ * 台账还可能包含 11102（该账号没有这个模型）。为保留清除负缓存等既有用途，
+ * 此函数返回所有有效条目；限流标志由展示组件按原因区分，并保留两个时间字段。
  */
-export function rateLimitedModels(a: Account): {model: string; reason: string}[] {
-  const rows = a.rate_limited_models ?? [];
-  const now = Date.now();
-  return rows
-    .filter((m) => {
-      const until = m.until;
-      if (typeof until !== 'string' || !until) return false;
-      const at = Date.parse(until);
-      return Number.isFinite(at) && at > now;
-    })
-    .map((m) => ({model: m.model, reason: String(m.reason ?? '')}));
+export function rateLimitedModels(a: Account, now = Date.now()): {
+  model: string;
+  reason: string;
+  until: string;
+  reset_at?: string;
+}[] {
+  const rows = Array.isArray(a.rate_limited_models) ? a.rate_limited_models : [];
+  return rows.flatMap((m) => {
+    if (!m || typeof m.model !== 'string' || !m.model.trim()
+      || typeof m.until !== 'string' || !m.until) return [];
+    const at = Date.parse(m.until);
+    if (!Number.isFinite(at) || at <= now) return [];
+    // 保留 provider 重置与池冷却两个时间；前者可能晚于被 soft_rate_max 截断的后者。
+    // 11102 是“账号没有该模型”，也要保留给原有清除负缓存入口，由展示组件分类。
+    return [{model: m.model, reason: String(m.reason ?? ''), until: m.until,
+      reset_at: typeof m.reset_at === 'string' ? m.reset_at : undefined}];
+  });
 }
 
 /**
