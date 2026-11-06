@@ -188,6 +188,10 @@ export function ModelWhitelistInput({
           }}
         />
         <Popover
+          // This content is portalled outside the parent Dialog. Its own modal
+          // scroll lock must own touchmove events; otherwise the Dialog's lock
+          // treats the model list as outside content and cancels every swipe.
+          modal
           open={open}
           onOpenChange={(next) => {
             setOpen(next);
@@ -206,18 +210,26 @@ export function ModelWhitelistInput({
               {t('keys.modelPick')}
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="end" className="w-[320px] p-2">
-            <div className="mb-2 flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1">
+          <PopoverContent
+            align="end"
+            collisionPadding={12}
+            className="flex max-h-[min(420px,calc(100dvh-1.5rem),var(--radix-popover-content-available-height))] w-[min(320px,calc(100vw-1.5rem))] flex-col overflow-hidden p-2"
+            onOpenAutoFocus={(event) => {
+              // Keep mobile keyboards closed until the user taps search. The
+              // native input/FocusScope still autofocuses normally on desktop.
+              if (window.matchMedia('(pointer: coarse)').matches) event.preventDefault();
+            }}
+          >
+            <div className="mb-2 flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 py-1">
               <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <input
-                autoFocus
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={t('keys.modelPickSearch')}
                 className="w-full bg-transparent text-xs outline-none"
               />
             </div>
-            <div className="mb-2 flex items-center gap-1.5">
+            <div className="mb-2 flex shrink-0 flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 aria-pressed={freeOnly}
@@ -240,7 +252,11 @@ export function ModelWhitelistInput({
                 </button>
               )}
             </div>
-            <div className="max-h-[260px] overflow-y-auto">
+            <div
+              data-model-picker-list
+              className="scroll-slim min-h-0 max-h-[260px] flex-1 touch-pan-y overflow-y-auto overscroll-y-contain"
+              style={{WebkitOverflowScrolling: 'touch'}}
+            >
               {failed && (
                 <p className="px-2 py-6 text-center text-xs text-muted-foreground">
                   {t('keys.modelPickUnavailable')}
