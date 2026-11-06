@@ -47,6 +47,7 @@ async def model_catalog(
 class BusyIn(BaseModel):
     realm: str = Field(default='cn', pattern='^(cn|global)$')
     models: list[str] = Field(default_factory=list, max_length=500)
+    force: bool = False
 
 
 @router.post('/model-busy')
@@ -66,6 +67,6 @@ async def model_busy(body: BusyIn, user: dict = Depends(security.current_user)) 
         if mid not in models:
             models.append(mid)
     try:
-        return await modelbusy.fetch(body.realm, models)
+        return await modelbusy.fetch(body.realm, models, force=body.force)
     except ValueError as exc:
         raise HTTPException(503, str(exc)) from None

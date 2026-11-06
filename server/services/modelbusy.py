@@ -13,7 +13,7 @@ TTL = 30
 _cache: dict[tuple, tuple[float, dict]] = {}
 _lock = asyncio.Lock()
 
-async def fetch(realm: str, models: list[str]) -> dict:
+async def fetch(realm: str, models: list[str], *, force: bool = False) -> dict:
     if not models:
         return {'realm': realm, 'source': 'provider_chat_busy', 'levels': {}, 'observed_at': None, 'cached': False, 'partial': False}
     try:
@@ -49,7 +49,7 @@ async def fetch(realm: str, models: list[str]) -> dict:
     async with _lock:
         now = time.monotonic()
         cached = _cache.get(cache_key)
-        if cached and now - cached[0] < TTL:
+        if not force and cached and now - cached[0] < TTL:
             return {**cached[1], 'cached': True}
         ok, levels = await tencent.fetch_model_busy(auth, models)
         if not ok and not levels:
