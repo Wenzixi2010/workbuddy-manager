@@ -674,6 +674,8 @@
     "boundaryShort": "Only for accounts you or your family have authorized; bulk registration, trading, SMS farming, theft, evasion and resale are prohibited."
   },
   "keys": {
+    "expandScopeDetails": "Expand bound accounts and model group for {name}",
+    "collapseScopeDetails": "Collapse bound accounts and model group for {name}",
     "colBoundAccounts": "Bound accounts",
     "colUsableAccounts": "Usable accounts",
     "scopePermissionHint": "Permission scope combines Key selection, account allowlists, exclusive reservations and realm. Key status/quotas and account balance/cooling/model limits still affect real calls.",

@@ -647,6 +647,8 @@
     "boundaryShort": "仅限本人及亲属自愿授权的账号；禁止批量注册、账号交易、接码、盗号、绕过平台风控与商业转售。"
   },
   "keys": {
+    "expandScopeDetails": "展开 {name} 的绑定账号和模型分组",
+    "collapseScopeDetails": "收起 {name} 的绑定账号和模型分组",
     "colBoundAccounts": "绑定账号",
     "colUsableAccounts": "可使用账号",
     "scopePermissionHint": "可使用账号按 Key 账号范围、账号允许名单、独占占用及版本共同计算；这里只表示权限范围，Key 启停/额度、账号余额/冷却/模型限流仍会影响实际调用。",

@@ -647,6 +647,8 @@
     "boundaryShort": "본인과 가족이 자발적으로 허용한 계정 전용입니다. 대량 등록, 계정 거래, 인증번호 대행, 도용, 우회, 재판매는 금지됩니다."
   },
   "keys": {
+    "expandScopeDetails": "{name}의 연결 계정 및 모델 그룹 펼치기",
+    "collapseScopeDetails": "{name}의 연결 계정 및 모델 그룹 접기",
     "colBoundAccounts": "연결된 계정",
     "colUsableAccounts": "사용 가능 계정",
     "scopePermissionHint": "Key 범위, 계정 허용 목록, 독점 예약과 지역의 권한 범위입니다. Key 상태/할당량 및 잔액/냉각/모델 제한이 실제 호출에 영향을 줍니다.",

@@ -647,6 +647,8 @@
     "boundaryShort": "僅限本人及親屬自願授權的帳號；禁止批量註冊、帳號交易、接碼、盜號、繞過平台風控與商業轉售。"
   },
   "keys": {
+    "expandScopeDetails": "展開 {name} 的綁定帳號及模型群組",
+    "collapseScopeDetails": "收合 {name} 的綁定帳號及模型群組",
     "colBoundAccounts": "綁定帳號",
     "colUsableAccounts": "可使用帳號",
     "scopePermissionHint": "依 Key 範圍、帳號允許名單、獨占與版本計算權限範圍；Key 啟停/額度及帳號餘額/冷卻/模型限制仍影響實際呼叫。",

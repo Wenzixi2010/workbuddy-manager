@@ -14,7 +14,7 @@ import {PageSectionTabs} from '@/components/common/layout/PageSectionTabs';
 import {EmptyState} from '@/components/common/layout/EmptyState';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
 import {KeyAccountSelector} from '@/components/common/keys/KeyAccountSelector';
-import {KeyAccountScopeCell} from '@/components/common/keys/KeyAccountScopeCell';
+import {KeyNameDetails} from '@/components/common/keys/KeyNameDetails';
 import Link from 'next/link';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
@@ -621,13 +621,7 @@ export default function KeysPage() {
               return (
                 <TableRow key={k.id} className="border-b border-border/40">
                   <TableCell className="pl-4 text-sm font-medium">
-                    <div>{k.name}</div>
-                    {!!k.model_group_id && <Badge variant="secondary" className="mt-1 text-[10px]">
-                      {t('modelGroups.groupTag', {name: k.model_group_name || `#${k.model_group_id}`})}
-                    </Badge>}
-                    {k.bind_mode === 'exclusive' && !!k.account_ids?.length && <div className="mt-1 text-xs">
-                      <KeyAccountScopeCell apiKey={k} kind="bound" />
-                    </div>}
+                    <KeyNameDetails apiKey={k} />
                     {/* 只标「绑定了上游」的行：默认上游是绝大多数，每行都标等于没标，
                         有值才说明这把钥匙走的是另一个账号池（见 server/upstreamsvc.py） */}
                     {k.upstream_id ? (

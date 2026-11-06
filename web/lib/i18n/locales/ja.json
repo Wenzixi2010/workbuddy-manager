@@ -647,6 +647,8 @@
     "boundaryShort": "本人および家族が自発的に許可したアカウント専用。一括登録・売買・SMS認証代行・不正取得・回避・転売は禁止です。"
   },
   "keys": {
+    "expandScopeDetails": "{name} の紐付けアカウントとモデルグループを展開",
+    "collapseScopeDetails": "{name} の紐付けアカウントとモデルグループを閉じる",
     "colBoundAccounts": "紐付けアカウント",
     "colUsableAccounts": "利用可能アカウント",
     "scopePermissionHint": "Key 範囲、アカウント許可、専有とリージョンの権限範囲です。Key 状態/割当、残高/冷却/モデル制限は実際の呼び出しに影響します。",
