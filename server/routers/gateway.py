@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import config, db, iputil, keysvc, upstreamsvc
 from ..services import accountaccess
-from ..services import dshmodels, modelcatalog, modelmap, proxyroutes, toolmodels
+from ..services import dshmodels, modelcatalog, modeldisplay, modelmap, proxyroutes, toolmodels
 from ..config import _env_int
 from ..routers.security import get_config as get_security_config
 
@@ -1049,6 +1049,9 @@ async def _list_models(request: Request, *, catalog_format: str = 'openai'):
         payload = _listing_compat_models(payload)
         # 国内版 id 去掉 `cn:` 前缀，与模型中心显示的名字一致（裸名 = 国内版）。
         payload = _bare_cn_model_ids(payload)
+        # DSH 等工具只显示 name，不读取独立 credits 字段。倍率与国际版标记
+        # 只加到显示名，绝不改调用 ID / 国际版 global: 前缀 / 用户别名。
+        payload = modeldisplay.decorate_listing(payload, mapping=db.get_setting('model_map', {}))
         if catalog_format == 'codex':
             try:
                 payload = toolmodels.codex_catalog(

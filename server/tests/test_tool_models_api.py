@@ -208,6 +208,64 @@ class ToolModelCatalogApiTests(unittest.TestCase):
         self.assertEqual(db.query('SELECT id FROM model_groups'), [],
                          'Discovery must not invent groups for ungrouped Keys')
 
+    def test_display_labels_include_multiplier_and_global_marker_without_changing_ids(self) -> None:
+        self.model_payload['data'][0]['credits'] = 'x0.11'
+        self.model_payload['data'][1]['credits'] = 'x1.33 credits'
+        before = json.dumps(self.model_payload, sort_keys=True)
+        key = self._key()
+        for path in self.PATHS:
+            with self.subTest(path=path):
+                entries = self._catalog(path, key)
+                self.assertEqual(self._ids(path, entries), [
+                    'deepseek-test', 'global:deepseek-test', 'text-test',
+                ])
+                field = 'display_name' if path == '/v1/_models' else 'name'
+                self.assertEqual([entry[field] for entry in entries], [
+                    'CN fixture · x0.11', '[Global] Global fixture · x1.33 credits', 'text-test',
+                ])
+                if path != '/v1/_dsh_models':
+                    self.assertEqual(entries[0]['credits'], 'x0.11')
+                    self.assertEqual(entries[1]['credits'], 'x1.33 credits')
+        self.assertEqual(json.dumps(self.model_payload, sort_keys=True), before)
+        self.assertTrue(all(request.method == 'GET' for request in self.forwarded))
+
+    def test_global_alias_display_uses_target_realm_but_keeps_callable_alias(self) -> None:
+        db.set_setting('model_map', {'my-alias': 'global:deepseek-test'})
+        group_id = self._model_group(['my-alias'], 'global')
+        self.model_payload['data'][1]['credits'] = 'x0.00'
+        key = self._key(model_group_id=group_id)
+        for path in self.PATHS:
+            with self.subTest(path=path):
+                entries = self._catalog(path, key)
+                self.assertEqual(self._ids(path, entries), ['my-alias'])
+                field = 'display_name' if path == '/v1/_models' else 'name'
+                self.assertEqual(entries[0][field], '[Global] Global fixture · x0.00')
+                self._assert_capability(path, entries[0], ['high', 'max'], 'max')
+
+    def test_native_display_wording_is_retained_and_existing_suffix_is_not_duplicated(self) -> None:
+        self.model_payload['data'][1].update({
+            'name': '[Global] Global fixture · x1.33',
+            'display_name': 'Native title', 'credits': 'x1.33',
+        })
+        key = self._key(realm='global')
+        native = self._catalog('/v1/_models', key)[0]
+        self.assertEqual(native['name'], '[Global] Global fixture · x1.33')
+        self.assertEqual(native['display_name'], '[Global] Native title · x1.33')
+        self.assertEqual(native['slug'], 'global:deepseek-test')
+        self.assertEqual(self._catalog('/v1/_dsh_models', key)[0]['name'],
+                         '[Global] Global fixture · x1.33')
+
+    def test_anthropic_model_names_share_display_labels_and_unmodified_ids(self) -> None:
+        self.model_payload['data'][1]['credits'] = 'x1.33'
+        key = self._key(realm='global')
+        response = self.client.get('/v1/models', headers={
+            **self._headers(key), 'anthropic-version': '2023-06-01',
+        })
+        self.assertEqual(response.status_code, 200)
+        entries = response.json()['data']
+        self.assertEqual(entries[0]['display_name'], '[Global] Global fixture · x1.33')
+        self.assertEqual(entries[0]['id'], 'global:deepseek-test')
+
     def test_realm_and_original_efforts_match_in_all_shapes(self) -> None:
         for realm, expected_ids, expected_efforts, default in (
             ('cn', ['deepseek-test', 'text-test'],
