@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import config, db, iputil, keysvc, upstreamsvc
 from ..services import accountaccess
-from ..services import modelcatalog, modelmap, proxyroutes
+from ..services import dshmodels, modelcatalog, modelmap, proxyroutes, toolmodels
 from ..config import _env_int
 from ..routers.security import get_config as get_security_config
 
@@ -996,6 +996,22 @@ def key_usage(request: Request):
 # 未限定版本的密钥（存量）照旧看到全部——它们本来就两版都能调。
 @router.get('/v1/models')
 async def list_models(request: Request):
+    return await _list_models(request)
+
+
+@router.get('/v1/_models')
+async def list_codex_models(request: Request):
+    """Codex 原生模型目录；与普通目录共用密钥和账号作用域。"""
+    return await _list_models(request, catalog_format='codex')
+
+
+@router.get('/v1/_dsh_models')
+async def list_dsh_models(request: Request):
+    """DSH profile.models 配置片段；不导出连接凭据。"""
+    return await _list_models(request, catalog_format='dsh')
+
+
+async def _list_models(request: Request, *, catalog_format: str = 'openai'):
     key, ip, err = _authorize(request, None, is_model_list=True)
     if err:
         return err
@@ -1016,21 +1032,35 @@ async def list_models(request: Request):
                                     headers=headers)
         latency = int((time.time() - started) * 1000)
         _record(key, ip, '', '', resp.status_code, 0, 0, latency, request.headers.get('user-agent'), None, False)
-        payload = _scope_models(resp.json(), key)
+        payload = resp.json()
+        # 鉴权/限流等上游错误不能被目录转换成空的成功清单。
+        if resp.status_code >= 400:
+            return JSONResponse(payload, status_code=resp.status_code)
+        payload = _scope_models(payload, key)
         # 目录收缩（issue #239）：上游模型表可能仍列着腾讯已经下架的 id，
         # 客户端选中后才 503。模型中心直连腾讯的目录是当前可用的权威清单，
         # 取得到且来源是腾讯时按它裁一次；取不到就原样透传。
-        # The general catalog probes the default pool. Scoped listings already
-        # use permitted accounts upstream; never probe another account here.
-        if accountaccess.HEADER not in headers:
+        # 模型中心只探默认池。具名渠道和 scoped 清单已经选定自己的账号，
+        # 不能拿默认池目录裁掉它们独有的模型，也不能顺带探测别的账号。
+        if upstream.get('id') is upstreamsvc.DEFAULT_ID and accountaccess.HEADER not in headers:
             payload = await _drop_models_outside_catalog(payload, key)
         # 能力字段兜底（issue #211）：随包上游的版本可能比面板旧 —— 补丁只在上游
         # 侧时，下游经面板拿到的清单仍缺字段，客户端会整条跳过模型。
         payload = _listing_compat_models(payload)
         # 国内版 id 去掉 `cn:` 前缀，与模型中心显示的名字一致（裸名 = 国内版）。
         payload = _bare_cn_model_ids(payload)
-        # Anthropic 客户端（Claude Code 等）也会调这个路径，但期望的结构不同
-        if request.headers.get('anthropic-version'):
+        if catalog_format == 'codex':
+            try:
+                payload = toolmodels.codex_catalog(
+                    payload, client_version=request.query_params.get('client_version'))
+            except toolmodels.CatalogTooLargeError as exc:
+                # 这是客户端目录大小限制，不是上游连接失败；本次上游响应已经
+                # 留痕，不能再伪造第二条「上游不可用」请求记录。
+                return _oai_error(str(exc), 502, 'api_error', 'model_catalog_too_large')
+        elif catalog_format == 'dsh':
+            payload = dshmodels.export_models(payload)
+        # Anthropic 客户端（Claude Code 等）也会调普通路径，但期望的结构不同。
+        elif catalog_format == 'openai' and request.headers.get('anthropic-version'):
             payload = _as_anthropic_models(payload)
         return JSONResponse(payload, status_code=resp.status_code)
     except Exception as exc:  # noqa: BLE001
@@ -1202,7 +1232,8 @@ def _scope_models(payload: object, key: dict | None) -> object:
     key = key or {}
     want = keysvc._norm_realm(key.get('realm'))
     allow = [str(x) for x in (key.get('models') or []) if str(x).strip()]
-    if not want and not allow:
+    group_scope = bool(key.get('model_group_realm') or key.get('model_group_invalid'))
+    if not want and not allow and not group_scope:
         return payload
     if not isinstance(payload, dict):
         return payload
@@ -1212,12 +1243,21 @@ def _scope_models(payload: object, key: dict | None) -> object:
 
     in_realm = [m for m in items
                 if isinstance(m, dict) and (not want or _model_realm_of(m) == want)]
-    if not allow:
+    if not allow and not group_scope:
         return {**payload, 'data': in_realm}
+    mapping = db.get_setting('model_map', {}) or {}
 
-    scoped = [m for m in in_realm if keysvc.model_allowed(key, m.get('id'))]
+    def admitted(m: dict) -> bool:
+        name = m.get('id')
+        # 与调用侧相同：分组版本判真正路由的目标，白名单仍判客户端名字。
+        target = modelmap.target_for(mapping, name) if isinstance(name, str) else name
+        return keysvc.model_allowed(key, name, realm_model=target)
+
+    scoped = [m for m in in_realm if admitted(m)]
     # 别名：白名单可能写的是下游熟悉的别名，它不在清单里，要补进来
-    scoped += _alias_entries(in_realm, allow)
+    # 补录后仍须判模型分组版本，不能靠别名本身的裸名前缀决定账号池。
+    if allow:
+        scoped += [m for m in _alias_entries(in_realm, allow) if admitted(m)]
     return {**payload, 'data': scoped}
 
 
@@ -1259,48 +1299,8 @@ def _bare_cn_model_ids(payload: object) -> object:
 
 
 def _listing_compat_models(payload: object) -> object:
-    """补齐第三方模型目录客户端要读的能力字段（issue #211）。
-
-    上游从 #156 起在它自己的 `/v1/models` 里补了 `modalities` /
-    `supported_reasoning_levels`。但面板是**独立进程**，随包分发的上游可能比面板
-    旧（补丁只打在上游），于是下游经面板拿到的清单仍缺字段 —— 报告人的 Magpie
-    就是这样整条跳过模型、看不到多模态与推理档位的。
-
-    这里在面板侧再补一遍，口径与上游的 `addListingCompat` 一致，且**只增不改**：
-
-      · `modalities`：缺字段时补 `{"input": ["text"] + (["image"] if
-        supports_images)}`。文本是所有模型都有的能力；缺整个字段会让客户端
-        直接跳过（这正是 #211 的现场）；
-      · `supported_reasoning_levels`：缺字段且有 `reasoning_supported_efforts`
-        时派生成 `[{"effort": e}]`；没有档位就不编造；
-      · `supports_reasoning`：有档位而字段缺失时补 `true`。
-
-    认不出的结构（不是 `{data:[...]}`）原样透传 —— 不在看不懂的响应上动手脚。
-    """
-    if not isinstance(payload, dict):
-        return payload
-    items = payload.get('data')
-    if not isinstance(items, list):
-        return payload
-    out: list = []
-    for m in items:
-        if not isinstance(m, dict) or not m.get('id'):
-            out.append(m)
-            continue
-        entry = dict(m)
-        if 'modalities' not in entry:
-            inputs = ['text']
-            if entry.get('supports_images') is True:
-                inputs.append('image')
-            entry['modalities'] = {'input': inputs}
-        efforts = entry.get('reasoning_supported_efforts')
-        if 'supported_reasoning_levels' not in entry and isinstance(efforts, list):
-            levels = [{'effort': e} for e in efforts if isinstance(e, str) and e]
-            if levels:
-                entry['supported_reasoning_levels'] = levels
-                entry.setdefault('supports_reasoning', True)
-        out.append(entry)
-    return {**payload, 'data': out}
+    """展示层兼容字段；可信能力只来自当前渠道报告的档位与默认值。"""
+    return toolmodels.listing_compat(payload)
 
 
 # ── 对话补全（v1 / v2）──────────────────────────────────

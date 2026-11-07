@@ -6,7 +6,8 @@
 
 对管理端的判断：**不需要适配**。我们的网关是 `yield chunk` 原样透传上游字节，
 只在旁边用 `_scan_sse` 读一份做用量与首字统计（不改写、不回写、不缓冲），
-且全仓库完全不碰 tool_calls。所以上游这个修复会通过转发路径自动生效。
+且 Chat 网关转发热路径不碰 tool_calls。协议转换层与模型目录能力元数据不是
+这条透传路径。所以上游这个修复会通过转发路径自动生效。
 
 本文件把这个「结论」变成断言：若将来有人在转发热路径里开始改写 SSE
 （例如为了统一 tool_calls 形态），这些用例会失败，逼迫他先想清楚
@@ -15,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -22,6 +24,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from server.routers import gateway  # noqa: E402
+
+
+# 消息字段的完整标识符；目录能力 supports_parallel_tool_calls 不是工具调用帧。
+# 不豁免整个目录服务文件：若它以后真的读写 tool_calls，守卫仍必须发现。
+_TOOL_CALLS_FIELD = re.compile(r'\btool_calls\b')
 
 
 def _data(obj) -> str:
@@ -126,6 +133,10 @@ class GatewayPassthroughTest(unittest.TestCase):
 
         新增此类转换层时**显式**登记在此，而不是放宽匹配——豁免名单越长越该
         有人复核，静默放行会让这条约束慢慢失效。
+
+        模型目录的 supports_parallel_tool_calls 只是能力声明，不是消息的
+        tool_calls 字段。扫描完整字段/标识符，不能把目录元数据的子串误判为
+        SSE 改写；也不能因此把整个目录服务排除，真实字段访问仍须被发现。
         """
         # 例外：协议转换层（不是转发热路径）
         #   · services/tencent.py：账号探测（issue #270）不是转发路径 —— 它扫一遍
@@ -140,9 +151,16 @@ class GatewayPassthroughTest(unittest.TestCase):
             rel = str(f.relative_to(root)).replace('\\', '/')
             if rel in allow:
                 continue
-            if 'tool_calls' in f.read_text(encoding='utf-8'):
+            if _TOOL_CALLS_FIELD.search(f.read_text(encoding='utf-8')):
                 hits.append(str(f.relative_to(root)))
         self.assertEqual(hits, [], f'以下文件开始处理 tool_calls：{hits}')
+
+    def test_tool_calls_guard_excludes_only_catalog_metadata_identifier(self) -> None:
+        self.assertIsNone(_TOOL_CALLS_FIELD.search('{"supports_parallel_tool_calls": false}'))
+        for source in ("delta['tool_calls'] = []", 'frame.tool_calls', 'tool_calls = []'):
+            with self.subTest(source=source):
+                self.assertIsNotNone(_TOOL_CALLS_FIELD.search(source),
+                                     '目录元数据例外不能放行真实消息字段或变量的处理')
 
 
 if __name__ == '__main__':

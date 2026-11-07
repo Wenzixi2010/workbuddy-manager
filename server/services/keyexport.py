@@ -9,10 +9,10 @@
 不碰客户端数据、不发网络。落盘/导入是后续步骤的事（见 docs 提案 §4），
 这样导出功能可以先以最小风险合入。
 
-**模型 id 用网关口径**（带 `cn:` / `global:` 前缀）：面板「模型中心」显示的是
-腾讯返回的裸名（`glm-5.2`），而上游 `/v1/models` 与客户端实际调用用的是
-带前缀的 id（`cn:glm-5.2`）。两者混用会让客户端选中模型后 404，所以这里
-统一产出**带前缀**的 id，并在白名单为空时要求调用方给出完整清单。
+**通用模型 id 用网关口径**（带 `cn:` / `global:` 前缀）：按版本规范化模型名，
+并在白名单为空时要求调用方给出完整清单。Codex 的 config.model 与深链 model
+单独去掉国内 `cn:`，与原生目录 slug 对齐；网关也接受国内裸名。
+国际 `global:` 决定路由，所有客户端都保留。
 
 **两种 base url 口径，不能混用**（同一个面板地址，三类客户端要的值不同）：
 
@@ -115,9 +115,31 @@ def first_model(models: list[str] | None, realm: str,
     return _pick_models(models, realm, default_model)[0]
 
 
+def codex_model_slug(model_id: str) -> str:
+    """网关模型 ID → Codex 原生目录的 slug；不能去掉国际版路由前缀。"""
+    return model_id[3:] if model_id.startswith('cn:') else model_id
+
+
+def first_codex_model(models: list[str] | None, realm: str,
+                      default_model: str | None = None, *,
+                      model_aliases: list[str] | None = None) -> str:
+    """Codex 初选模型：明确的请求别名保持原名，真模型仍按版本规范化。
+
+    别名元数据由调用方提供，本模块不读数据库。同后缀的其他别名不能改变一个
+    已带 global: 的首选真模型，所以先看实际首个请求名，再决定是否保留别名。
+    """
+    chosen = first_model(models, realm, default_model)
+    requested = next((str(m or '').strip() for m in (models or [])
+                      if str(m or '').strip()), str(default_model or '').strip())
+    if requested in (model_aliases or []):
+        chosen = requested
+    return codex_model_slug(chosen)
+
+
 def to_ccswitch(*, token: str, base_url: str, app: str, name: str,
                 models: list[str] | None = None, realm: str = 'cn',
-                default_model: str | None = None) -> dict:
+                default_model: str | None = None,
+                model_aliases: list[str] | None = None) -> dict:
     """生成 cc-switch 的 `providers.settings_config`（字典，调用方再 json.dumps）。
 
     结构取自 cc-switch 库中真实数据（2026-09-24 实测）：
@@ -150,6 +172,10 @@ def to_ccswitch(*, token: str, base_url: str, app: str, name: str,
             'ANTHROPIC_DEFAULT_OPUS_MODEL': chosen,
         }}
 
+    # Codex 的选中模型必须与原生目录 slug 一致：真模型按版本，明确别名用请求名。
+    # 只改 Codex 分支，Claude / ZCode 及通用 first_model 仍沿用原有导出口径。
+    chosen = first_codex_model(models, realm, default_model, model_aliases=model_aliases)
+
     # codex：TOML 文本。转义双引号以免模型名里出现引号时破坏 TOML。
     def _q(value: str) -> str:
         return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -165,6 +191,9 @@ def to_ccswitch(*, token: str, base_url: str, app: str, name: str,
         'wire_api = "responses"',
         'requires_openai_auth = true',
         f'base_url = {_q(base_url)}',
+        # API-key 自定义 provider 不会仅凭 base_url 自动读取模型目录。
+        # 显式 URL 使用 Codex 的 models[] 形状；普通 /models 仍供 OpenAI 客户端用。
+        f'model_catalog_url = {_q(str(base_url).rstrip("/") + "/_models")}',
         '',
     ]
     return {'auth': {'OPENAI_API_KEY': token}, 'config': '\n'.join(lines)}

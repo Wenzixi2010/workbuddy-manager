@@ -373,9 +373,27 @@ def _config_context(body: ExportIn, request: Request) -> dict:
     的模块说明）在复制粘贴中最容易走样，只留一份就不存在走样。
     """
     resolved = keysvc.resolve(body.token)
-    realm = str((resolved or {}).get('realm') or '').strip() or 'cn'
+    is_codex = (body.client.strip().lower() == 'ccswitch'
+                and body.app.strip().lower() == 'codex')
+    key_realm = str((resolved or {}).get('realm') or '').strip()
+    realm = key_realm or 'cn'
+    # Codex 目录按 Key 的模型分组约束版本。Key 未单独限定版本时，国际分组不能
+    # 在导出时误用国内目录/前缀；仅改 Codex，不改变其他客户端的历史默认口径。
+    if not key_realm and is_codex:
+        group_realm = str((resolved or {}).get('model_group_realm') or '').strip()
+        if group_realm in ('cn', 'global'):
+            realm = group_realm
     if realm not in ('cn', 'global'):
         realm = 'cn'
+    models = _export_models(body, realm)
+    default_model = body.default_model.strip() or None
+    model_aliases: list[str] = []
+    if is_codex:
+        mapping = db.get_setting('model_map', {})
+        requested_names = dict.fromkeys([str(m or '').strip() for m in models]
+                                        + ([default_model] if default_model else []))
+        model_aliases = [name for name in requested_names
+                         if name and modelmap.target_for(mapping, name) != name]
     return {
         'resolved': resolved,
         'realm': realm,
@@ -384,8 +402,10 @@ def _config_context(body: ExportIn, request: Request) -> dict:
         'base_url': keyexport.gateway_base_url(_derive_base_url(request, body.base_url)),
         'name': body.provider_name.strip()
                 or f"WorkBuddy {((resolved or {}).get('name') or 'key')}",
-        'models': _export_models(body, realm),
-        'default_model': body.default_model.strip() or None,
+        'models': models,
+        'default_model': default_model,
+        # 显式映射或兜底实际改写的请求名；纯导出不自行查库猜别名。
+        'model_aliases': model_aliases,
         'prefix': str((resolved or {}).get('prefix') or 'manual'),
     }
 
@@ -397,7 +417,7 @@ def _client_settings(*, client: str, app: str, token: str, ctx: dict,
         return keyexport.to_ccswitch(
             token=token, base_url=ctx['base_url'], app=app, name=ctx['name'],
             models=ctx['models'], realm=ctx['realm'],
-            default_model=ctx['default_model'])
+            default_model=ctx['default_model'], model_aliases=ctx.get('model_aliases'))
     return keyexport.to_zcode(
         token=token, base_url=ctx['base_url'], name=ctx['name'],
         # 用密钥前缀做 providerId：同一把密钥重复导入时能对上同一个供应商
@@ -592,7 +612,7 @@ def import_local(body: ImportIn, request: Request,
             result = keyimport.import_ccswitch_deeplink(
                 app=app, name=ctx['name'], settings_config=settings,
                 token=body.token, base_url=endpoint_url,
-                model=_main_model(ctx), set_current=body.set_current)
+                model=_main_model(ctx, client=client, app=app), set_current=body.set_current)
         else:
             # 直写：写盘那一刻客户端必须是退出的，否则它随后的保存会整份覆盖。
             with keyimport.client_closed(client,
@@ -623,10 +643,13 @@ def import_local(body: ImportIn, request: Request,
     return out
 
 
-def _main_model(ctx: dict) -> str:
+def _main_model(ctx: dict, *, client: str, app: str) -> str:
     """这次配置实际用的主模型（走深链时要把它塞进 URL，口径必须和配置里一致）。"""
     try:
-        return keyexport.first_model(ctx['models'], ctx['realm'],
-                                     ctx.get('default_model'))
+        if client == 'ccswitch' and app == 'codex':
+            return keyexport.first_codex_model(
+                ctx['models'], ctx['realm'], ctx.get('default_model'),
+                model_aliases=ctx.get('model_aliases'))
+        return keyexport.first_model(ctx['models'], ctx['realm'], ctx.get('default_model'))
     except ValueError:
         return ''

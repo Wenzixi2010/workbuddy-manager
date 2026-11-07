@@ -440,19 +440,24 @@ def resolve(token: str) -> dict | None:
     return None
 
 
-def model_allowed(key: dict, model: object) -> bool:
+def model_allowed(key: dict, model: object, *, realm_model: object = None) -> bool:
     """该密钥的**模型白名单**是否放行这个模型。
 
     **调用侧与 `/v1/models` 裁剪共用这一份判据**（issue #46）：两处各写一遍
     迟早漂移，而漂移的表现正是那个 issue 要修的问题——列表里给出的模型，
     调用时却被白名单拒掉（客户端把它当模型选择器，于是「能选、一选就失败」）。
 
-    白名单为空 = 不限制，一律放行。
+    realm_model 是映射后的实际路由名，只用于模型分组的版本约束；白名单
+    仍判客户端请求的 model（别名）。不传时按原 model 判版本。
+
+    白名单为空 = 不限制，但仍须满足模型分组的版本约束。
     """
     if key.get('model_group_invalid'):
         return False
     group_realm = key.get('model_group_realm') or ''
-    if group_realm and (not isinstance(model, str) or db.realm_of_model(model) != group_realm):
+    effective_realm_model = realm_model if realm_model is not None else model
+    if group_realm and (not isinstance(effective_realm_model, str)
+                        or db.realm_of_model(effective_realm_model) != group_realm):
         return False
     allow = key.get('models') or []
     if not allow:
@@ -676,7 +681,7 @@ def validate(key: dict, ip: str, model: str | None,
                              'invalid_request_error', 'model_not_allowed')
         # 判据见 `model_allowed`：与 `/v1/models` 的裁剪共用同一份，
         # 避免「列表里有、调用被拒」那种漂移（issue #46）。
-        if not model_allowed(key, model):
+        if not model_allowed(key, model, realm_model=effective):
             return Rejection(f'模型 {model} 不在密钥白名单内', 400,
                              'invalid_request_error', 'model_not_allowed')
     return None

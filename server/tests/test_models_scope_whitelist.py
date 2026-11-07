@@ -206,8 +206,14 @@ class SharedCriterionTest(unittest.TestCase):
         src = (Path(__file__).resolve().parents[1] / 'keysvc.py').read_text(encoding='utf-8')
         seg = src[src.index('def validate('):]
         seg = seg[:seg.index('\ndef ', seg.index('def validate(') + 10)]
-        self.assertIn('model_allowed(key, model)', seg,
+        self.assertIn('model_allowed(key, model, realm_model=effective)', seg,
                       'validate 没走共用判据 —— 两份规则会漂移')
+        gateway_src = (Path(__file__).resolve().parents[1] / 'routers' / 'gateway.py').read_text(
+            encoding='utf-8')
+        scoped = gateway_src[gateway_src.index('def _scope_models('):]
+        scoped = scoped[:scoped.index('\ndef ', scoped.index('def _scope_models(') + 10)]
+        self.assertIn('keysvc.model_allowed(key, name, realm_model=target)', scoped,
+                      '模型列表没走带真实路由版本的共用判据 —— 别名会漂移')
 
     def test_presence_guard_still_first(self) -> None:
         """「未指定 model」与「不在白名单」仍是**两条**不同的报错。

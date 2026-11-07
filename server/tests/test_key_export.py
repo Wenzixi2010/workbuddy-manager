@@ -1,9 +1,8 @@
 """密钥导出：把一把密钥转成 cc-switch / ZCode 的配置片段（纯函数 + 端点）。
 
 为什么需要这个功能：用户拿到面板密钥后，要手工把它填进 cc-switch 或 ZCode 的
-配置里（baseUrl、模型名、各档位模型都要填对），很容易填错——尤其模型名在两边
-口径不同（面板显示裸名 `glm-5.2`，网关与客户端要 `cn:glm-5.2`），填错的表现是
-「能选中、一发就 404」。
+配置里（baseUrl、模型名、各档位模型都要填对），很容易填错——尤其模型名与目录
+口径不匹配时，可能出现「能选中却看不到能力」或「一发就 404」。
 
 为什么只能导出「刚创建的」密钥：面板只存哈希（`keysvc.create_key` 里
 `out['key'] = token` 是唯一一次明文），列表行里的 prefix 拼不出完整密钥。因此
@@ -13,7 +12,8 @@
 本文件钉住五件事：
 
 1. **模型 id 必须是网关口径**（带 `cn:` / `global:` 前缀），裸名会被补前缀；
-   已有前缀的原样保留（`global:` 决定路由，不能按 realm 改写）。
+   已有前缀的原样保留（`global:` 决定路由，不能按 realm 改写）。Codex 的
+   config.model 单独去 `cn:`，与原生目录 slug 对齐；网关接受国内裸名。
 2. **`global:` 不被 realm 覆盖**：给国际版密钥导出时，`global:xxx` 与
    `cn:xxx` 是**两个不同的模型**，改写前缀会把用户指到另一个模型上。
 3. **空模型清单不能产出不可用配置**：至少要有一个默认模型，否则客户端里
@@ -58,6 +58,28 @@ class ModelIdTests(unittest.TestCase):
 
     def test_unknown_realm_falls_back_to_cn(self):
         self.assertEqual(keyexport.gateway_model_id('glm-5.2', 'weird'), 'cn:glm-5.2')
+
+    def test_codex_slug_only_removes_cn_prefix(self):
+        self.assertEqual(keyexport.codex_model_slug('cn:glm-5.2'), 'glm-5.2')
+        self.assertEqual(keyexport.codex_model_slug('global:gpt-5.5'), 'global:gpt-5.5')
+        self.assertEqual(keyexport.codex_model_slug('my-alias'), 'my-alias')
+        # Codex 的展示转换不改变通用主模型规则。
+        self.assertEqual(keyexport.first_model(['glm-5.2'], 'cn'), 'cn:glm-5.2')
+
+    def test_first_codex_model_keeps_explicit_global_alias(self):
+        self.assertEqual(keyexport.first_codex_model(
+            ['global-alias'], 'global', model_aliases=['global-alias']), 'global-alias')
+        self.assertEqual(keyexport.first_codex_model(
+            [], 'global', 'default-alias', model_aliases=['default-alias']), 'default-alias')
+        self.assertEqual(keyexport.first_codex_model(
+            ['', 'global-alias'], 'global', model_aliases=['global-alias']), 'global-alias')
+        # 没有明确 alias 元数据时，裸国际真模型仍需要路由前缀。
+        self.assertEqual(keyexport.first_codex_model(['deepseek-test'], 'global'),
+                         'global:deepseek-test')
+        # 后续同后缀别名不能剥掉首选真模型的显式 global:。
+        self.assertEqual(keyexport.first_codex_model(
+            ['global:global-alias', 'global-alias'], 'global',
+            model_aliases=['global-alias']), 'global:global-alias')
 
 
 class BaseUrlTests(unittest.TestCase):
@@ -125,10 +147,55 @@ class CCSwitchTests(unittest.TestCase):
         self.assertEqual(cfg['auth']['OPENAI_API_KEY'], TOKEN)
         toml = cfg['config']
         self.assertIn('base_url = "http://h/v1"', toml)
-        self.assertIn('model = "cn:glm-5.2"', toml)
+        self.assertIn('model_catalog_url = "http://h/v1/_models"', toml)
+        self.assertIn('model = "glm-5.2"', toml)
         self.assertIn('wire_api = "responses"', toml)
         # 上游是 OpenAI 兼容形态，需要 OpenAI 风格鉴权
         self.assertIn('requires_openai_auth = true', toml)
+
+    def test_codex_model_id_matches_catalog_slug(self):
+        """国内去 cn:、国际保 global:，白名单别名仍是客户端应发的名字。"""
+        cases = [
+            ('glm-5.2', 'cn', 'glm-5.2'),
+            ('cn:glm-5.2', 'cn', 'glm-5.2'),
+            ('global:gpt-5.5', 'cn', 'global:gpt-5.5'),
+            ('gpt-5.5', 'global', 'global:gpt-5.5'),
+            ('my-model-alias', 'cn', 'my-model-alias'),
+        ]
+        for model, realm, slug in cases:
+            with self.subTest(model=model, realm=realm):
+                cfg = keyexport.to_ccswitch(token=TOKEN, base_url='http://h/v1',
+                                            app='codex', name='WB', models=[model], realm=realm)
+                self.assertIn(f'model = "{slug}"', cfg['config'])
+
+    def test_codex_global_alias_metadata_does_not_change_claude(self):
+        common = dict(token=TOKEN, base_url='http://h/v1', name='WB',
+                      models=['global-alias'], realm='global', model_aliases=['global-alias'])
+        codex = keyexport.to_ccswitch(app='codex', **common)
+        self.assertIn('model = "global-alias"', codex['config'])
+        self.assertNotIn('model = "global:global-alias"', codex['config'])
+        claude = keyexport.to_ccswitch(app='claude', **common)
+        self.assertEqual(claude['env']['ANTHROPIC_MODEL'], 'global:global-alias')
+        self.assertEqual(keyexport.first_model(['global-alias'], 'global'), 'global:global-alias')
+
+    def test_codex_catalog_url_preserves_subpath_and_strips_trailing_slash(self):
+        """显式目录 URL 不能重复 /v1，也不能丢掉面板的部署子路径。"""
+        for base in ('https://h/panel/v1', 'https://h/panel/v1/'):
+            with self.subTest(base=base):
+                cfg = keyexport.to_ccswitch(token=TOKEN, base_url=base, app='codex',
+                                            name='WB', models=['m'], realm='cn')
+                self.assertIn('model_catalog_url = "https://h/panel/v1/_models"',
+                              cfg['config'])
+                self.assertNotIn('/v1/v1/', cfg['config'])
+                # 加目录发现不改鉴权和调用地址。
+                self.assertEqual(cfg['auth'], {'OPENAI_API_KEY': TOKEN})
+                self.assertIn(f'base_url = "{base}"', cfg['config'])
+
+    def test_codex_catalog_url_uses_the_same_toml_escaping(self):
+        """目录 URL 和其它 TOML 字符串一样转义，不拼接未转义的配置行。"""
+        cfg = keyexport.to_ccswitch(token=TOKEN, base_url='https://h/a"b/v1/',
+                                    app='codex', name='WB', models=['m'], realm='cn')
+        self.assertIn('model_catalog_url = "https://h/a\\"b/v1/_models"', cfg['config'])
 
     def test_toml_quotes_are_escaped(self):
         """模型名里出现引号时不能破坏 TOML（否则 cc-switch 整段配置解析失败）。"""
@@ -293,6 +360,68 @@ class EndpointTests(unittest.TestCase):
         body = resp.json()
         self.assertEqual(body['app_type'], 'claude')
         self.assertEqual(body['settings_config']['env']['ANTHROPIC_AUTH_TOKEN'], TOKEN)
+
+    def test_codex_export_uses_real_mapping_semantics_for_global_alias(self):
+        """只 mock setting 值；别名/兜底判据使用实际 modelmap.target_for。"""
+        client = self._client(admin=True)
+        cases = [
+            ({'global-alias': 'global:deepseek-test'}, 'global-alias', 'global-alias'),
+            ({'*': 'global:deepseek-test'}, 'fallback-alias', 'fallback-alias'),
+            ({'deepseek-test': 'deepseek-test'}, 'deepseek-test', 'global:deepseek-test'),
+            ({}, 'deepseek-test', 'global:deepseek-test'),
+        ]
+        for mapping, model, slug in cases:
+            with self.subTest(mapping=mapping, model=model):
+                with mock.patch('server.security.audit'), \
+                     mock.patch('server.keysvc.resolve', return_value={'realm': 'global'}), \
+                     mock.patch('server.routers.keys.db.get_setting', return_value=mapping):
+                    resp = client.post('/api/keys/export', json={
+                        'client': 'ccswitch', 'app': 'codex', 'token': TOKEN,
+                        'base_url': 'http://p', 'models': [model]})
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertIn(f'model = "{slug}"', resp.json()['settings_config']['config'])
+
+    def test_codex_export_group_realm_only_fills_unset_key_realm(self):
+        client = self._client(admin=True)
+        cases = [
+            ('codex', {'model_group_realm': 'global'}, 'global', 'global:deepseek-test'),
+            ('codex', {'realm': 'cn', 'model_group_realm': 'global'}, 'cn', 'deepseek-test'),
+            ('codex', {'realm': 'global', 'model_group_realm': 'cn'}, 'global',
+             'global:deepseek-test'),
+            ('codex', {'model_group_realm': 'invalid'}, 'cn', 'deepseek-test'),
+            # 其他客户端的既有默认版本口径保持不变。
+            ('claude', {'model_group_realm': 'global'}, 'cn', 'cn:deepseek-test'),
+        ]
+        for app, resolved, realm, model in cases:
+            with self.subTest(app=app, resolved=resolved):
+                with mock.patch('server.security.audit'), \
+                     mock.patch('server.keysvc.resolve', return_value=resolved), \
+                     mock.patch('server.routers.keys.db.get_setting', return_value={}):
+                    resp = client.post('/api/keys/export', json={
+                        'client': 'ccswitch', 'app': app, 'token': TOKEN,
+                        'base_url': 'http://p', 'models': ['deepseek-test']})
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertEqual(resp.json()['realm'], realm)
+                settings = resp.json()['settings_config']
+                if app == 'codex':
+                    self.assertIn(f'model = "{model}"', settings['config'])
+                else:
+                    self.assertEqual(settings['env']['ANTHROPIC_MODEL'], model)
+
+    def test_codex_export_reads_group_realm_catalog_without_extra_fetch(self):
+        client = self._client(admin=True)
+        with mock.patch('server.security.audit'), \
+             mock.patch('server.keysvc.resolve', return_value={'model_group_realm': 'global'}), \
+             mock.patch('server.routers.keys.db.get_setting', return_value={}), \
+             mock.patch('server.routers.keys.modelcatalog.cached_ids',
+                        return_value={'deepseek-test'}) as cached, \
+             mock.patch('server.routers.keys.modelcatalog.fetch_ids_blocking') as fetched:
+            resp = client.post('/api/keys/export', json={
+                'client': 'ccswitch', 'app': 'codex', 'token': TOKEN, 'base_url': 'http://p'})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        cached.assert_called_once_with('global')
+        fetched.assert_not_called()
+        self.assertIn('model = "global:deepseek-test"', resp.json()['settings_config']['config'])
 
 
 if __name__ == '__main__':

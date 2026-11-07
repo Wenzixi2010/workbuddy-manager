@@ -235,11 +235,15 @@ class UpstreamRoutingTest(_TempDbMixin, unittest.TestCase):
     class _Resp:
         status_code = 200
 
-        def json(self):
-            return {'id': 'x', 'choices': [], 'usage': {}}
+        def __init__(self, payload=None, status_code=200):
+            self.payload = payload
+            self.status_code = status_code
 
-    def _fake_client(self, sent: list):
-        resp = self._Resp()
+        def json(self):
+            return self.payload if self.payload is not None else {'id': 'x', 'choices': [], 'usage': {}}
+
+    def _fake_client(self, sent: list, response=None):
+        resp = response if response is not None else self._Resp()
         outer = self
 
         class _Client:
@@ -310,6 +314,110 @@ class UpstreamRoutingTest(_TempDbMixin, unittest.TestCase):
             r = self.client.get('/v1/models', headers={'Authorization': f"Bearer {key['key']}"})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(sent[0][1], 'http://bound.example:7863/v1/models')
+
+    def test_bound_models_never_use_default_pool_catalog(self) -> None:
+        """具名渠道独有模型不能被默认账号池目录误删。"""
+        from server.routers import gateway
+        up = upstreamsvc.create_upstream('A组', 'http://bound.example:7863')
+        key = keysvc.create_key('bound', upstream_id=up['id'], realm='cn')
+        response = self._Resp({'object': 'list', 'data': [{
+            'id': 'cn:bound-only', 'base_instructions': 'Upstream coding instructions.',
+            'reasoning_supported_efforts': ['high', 'max'],
+            'reasoning_default_effort': 'high',
+        }]})
+        for path in ('/v1/models', '/v1/_models?client_version=0.144.6', '/v1/_dsh_models'):
+            with self.subTest(path=path):
+                sent = []
+                with mock.patch.object(config, 'WB2API_BASE', 'http://default.example:7863'), \
+                        mock.patch.object(config, 'http_client',
+                                          lambda *a, **k: self._fake_client(sent, response)), \
+                        mock.patch.object(gateway, '_drop_models_outside_catalog',
+                                          mock.AsyncMock(return_value={'data': []})) as catalog:
+                    r = self.client.get(path, headers={'Authorization': f"Bearer {key['key']}"})
+                self.assertEqual(r.status_code, 200, r.text)
+                catalog.assert_not_called()
+                self.assertEqual(sent[0][1], 'http://bound.example:7863/v1/models')
+                if path.startswith('/v1/_models'):
+                    model = r.json()['models'][0]
+                    self.assertEqual(model['slug'], 'bound-only')
+                    self.assertEqual(model['default_reasoning_level'], 'high')
+                elif path == '/v1/_dsh_models':
+                    model = r.json()['models'][0]
+                    self.assertEqual(model['id'], 'bound-only')
+                    self.assertIn('reasoningEfforts', model)
+                    self.assertIn('warnings', r.json())
+                    self.assertNotIn('apiKey', model)
+                    self.assertNotIn('baseURL', model)
+                else:
+                    self.assertEqual(r.json()['data'][0]['id'], 'bound-only')
+
+    def test_default_models_still_use_default_pool_catalog(self) -> None:
+        from server.routers import gateway
+        key = keysvc.create_key('default', realm='cn')
+        response = self._Resp({'object': 'list', 'data': [{'id': 'cn:old-model'}]})
+        trimmed = {'object': 'list', 'data': []}
+        for path in ('/v1/models', '/v1/_models?client_version=0.144.6', '/v1/_dsh_models'):
+            with self.subTest(path=path):
+                with mock.patch.object(config, 'WB2API_BASE', 'http://default.example:7863'), \
+                        mock.patch.object(config, 'http_client',
+                                          lambda *a, **k: self._fake_client([], response)), \
+                        mock.patch.object(gateway, '_drop_models_outside_catalog',
+                                          mock.AsyncMock(return_value=trimmed)) as catalog:
+                    r = self.client.get(path, headers={'Authorization': f"Bearer {key['key']}"})
+                self.assertEqual(r.status_code, 200, r.text)
+                catalog.assert_awaited_once()
+                self.assertEqual(r.json()['data' if path == '/v1/models' else 'models'], [])
+
+    def test_model_catalog_errors_are_not_converted(self) -> None:
+        from server.routers import gateway
+        up = upstreamsvc.create_upstream('A组', 'http://bound.example:7863')
+        key = keysvc.create_key('bound', upstream_id=up['id'])
+        failure = {'error': {'message': 'upstream denied', 'type': 'api_error'},
+                   'data': [{'id': 'cn:not-a-successful-list'}]}
+        response = self._Resp(failure, status_code=429)
+        for path in ('/v1/models', '/v1/_models?client_version=0.144.6', '/v1/_dsh_models'):
+            with self.subTest(path=path):
+                with mock.patch.object(config, 'http_client',
+                                       lambda *a, **k: self._fake_client([], response)), \
+                        mock.patch.object(gateway.toolmodels, 'codex_catalog') as native, \
+                        mock.patch.object(gateway.dshmodels, 'export_models') as dsh:
+                    r = self.client.get(path, headers={'Authorization': f"Bearer {key['key']}"})
+                self.assertEqual(r.status_code, 429, r.text)
+                self.assertEqual(r.json(), failure)
+                native.assert_not_called()
+                dsh.assert_not_called()
+
+    def test_model_catalog_rejects_missing_key_before_upstream(self) -> None:
+        for path in ('/v1/models', '/v1/_models?client_version=0.144.6', '/v1/_dsh_models'):
+            with self.subTest(path=path):
+                sent = []
+                with mock.patch.object(config, 'http_client', lambda *a, **k: self._fake_client(sent)):
+                    r = self.client.get(path)
+                self.assertEqual(r.status_code, 401, r.text)
+                self.assertEqual(sent, [])
+
+    def test_native_model_catalog_size_error_is_explicit_and_logged_once(self) -> None:
+        from server.routers import gateway
+        up = upstreamsvc.create_upstream('A组', 'http://bound.example:7863')
+        key = keysvc.create_key('bound', upstream_id=up['id'])
+        response = self._Resp({'object': 'list', 'data': [{'id': 'cn:m'}]})
+        message = 'Codex 模型目录超过 1 MiB；请使用模型分组缩小该 Key 的模型列表'
+        with mock.patch.object(config, 'http_client',
+                               lambda *a, **k: self._fake_client([], response)), \
+                mock.patch.object(gateway.toolmodels, 'codex_catalog',
+                                  side_effect=gateway.toolmodels.CatalogTooLargeError(message)), \
+                mock.patch.object(gateway, '_record') as record, \
+                mock.patch.object(gateway, '_upstream_hint') as hint:
+            r = self.client.get('/v1/_models?client_version=0.144.6',
+                                headers={'Authorization': f"Bearer {key['key']}"})
+        self.assertEqual(r.status_code, 502, r.text)
+        self.assertEqual(r.json()['error']['code'], 'model_catalog_too_large')
+        self.assertEqual(r.json()['error']['message'], message)
+        self.assertNotIn('上游不可用', r.text)
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[4], 200,
+                         '只保留实际成功的上游响应记录，不重复记为连接失败')
+        hint.assert_not_called()
 
     def test_empty_key_same_address_inherits_default_key(self) -> None:
         """分组只填名称（api_key 留空、地址=默认分组）→ 转发沿用默认上游那把钥匙。

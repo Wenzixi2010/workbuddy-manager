@@ -60,6 +60,8 @@ docs
 *.md
 !README.md
 !CHANGELOG.md
+# Codex 原生目录导入时读取的运行时资产，不是可省略的开发文档。
+!server/services/codex_catalog/prompt.md
 
 # 注意 next-env.d.ts：它**不在**仓库里（被 .gitignore 排除），Next 构建时会
 # 自己生成，所以这里不需要为它写例外（实测：干净的 clone 能正常构建，

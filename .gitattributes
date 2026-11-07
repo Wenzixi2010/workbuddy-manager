@@ -16,3 +16,9 @@
 # upstream snapshot. Check patch applicability instead of treating its context
 # markers as trailing whitespace in ordinary source code.
 dev/upstream-patches/*.patch -whitespace
+
+# Keep the vendored Codex fallback and its upstream notices byte-for-byte.
+server/services/codex_catalog/*.md text eol=lf
+server/services/codex_catalog/*.txt text eol=lf
+# The unmodified upstream prompt contains intentional trailing whitespace.
+server/services/codex_catalog/prompt.md -whitespace

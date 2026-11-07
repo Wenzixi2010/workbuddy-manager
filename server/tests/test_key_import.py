@@ -613,6 +613,103 @@ class ImportEndpointTests(TempClientDirs):
         self.assertIn(TOKEN, url)
         self.assertNotIn(TOKEN, resp.text)
 
+    def test_codex_deeplink_model_matches_catalog_slug_and_toml(self):
+        """深链散字段会覆盖 TOML，国内裸名和国际前缀必须与导出配置一致。"""
+        import urllib.parse
+        db = self.make_ccswitch()
+        before = db.read_bytes()
+        self._enable()
+        self._loopback()
+        self._with_protocol()
+        cases = [
+            ('cn:glm-5.2', 'cn', 'glm-5.2'),
+            ('gpt-5.5', 'global', 'global:gpt-5.5'),
+            ('global:gpt-5.5', 'cn', 'global:gpt-5.5'),
+            ('my-model-alias', 'cn', 'my-model-alias'),
+        ]
+        for model, realm, slug in cases:
+            with self.subTest(model=model, realm=realm):
+                resolved = {'prefix': PREFIX, 'realm': realm, 'name': 'k'}
+                with mock.patch('server.keysvc.resolve', return_value=resolved), \
+                     mock.patch('server.routers.keys.db.get_setting', return_value={}), \
+                     mock.patch.object(keyimport, 'open_url', return_value=True) as opened, \
+                     mock.patch('server.security.audit'):
+                    resp = self._client().post(
+                        '/api/keys/import-local',
+                        json=self._payload(app='codex', models=[model]))
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertEqual(resp.json()['method'], 'deeplink')
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(opened.call_args.args[0]).query)
+                self.assertEqual(q['model'], [slug])
+                self.assertEqual(q['configFormat'], ['toml'])
+                toml = base64.b64decode(q['config'][0]).decode('utf-8')
+                self.assertIn(f'model = "{slug}"', toml)
+                self.assertIn('model_catalog_url = "http://h/v1/_models"', toml)
+                self.assertEqual(db.read_bytes(), before, '深链不该动客户端数据库')
+                self.assertNotIn(TOKEN, resp.text)
+
+    def test_codex_direct_import_keeps_catalog_and_slug(self):
+        """直写也共用导出配置，不能在本地导入时丢掉目录发现或换回 cn:。"""
+        self.make_ccswitch()
+        self._enable()
+        self._loopback()
+        self._resolve()
+        with mock.patch('server.security.audit'), \
+             mock.patch('server.routers.keys.db.get_setting', return_value={}):
+            resp = self._client().post(
+                '/api/keys/import-local',
+                json=self._payload(app='codex', mode='direct', models=['cn:glm-5.2']))
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()['method'], 'direct')
+        row = self.cc_row(keyimport.ccswitch_provider_id(PREFIX, 'codex'), 'codex')
+        self.assertIsNotNone(row)
+        settings = json.loads(row[1])
+        self.assertIn('model = "glm-5.2"', settings['config'])
+        self.assertIn('model_catalog_url = "http://h/v1/_models"', settings['config'])
+        self.assertEqual(settings['auth'], {'OPENAI_API_KEY': TOKEN})
+
+    def test_main_model_slug_conversion_is_only_for_ccswitch_codex(self):
+        from server.routers.keys import _main_model
+        ctx = {'models': ['cn:glm-5.2'], 'realm': 'cn', 'default_model': None}
+        self.assertEqual(_main_model(ctx, client='ccswitch', app='codex'), 'glm-5.2')
+        for client, app in (('ccswitch', 'claude'), ('zcode', ''), ('zcode', 'codex')):
+            with self.subTest(client=client, app=app):
+                self.assertEqual(_main_model(ctx, client=client, app=app), 'cn:glm-5.2')
+
+    def test_global_codex_alias_matches_catalog_in_deeplink_and_direct_import(self):
+        import urllib.parse
+        self.make_ccswitch()
+        self._enable()
+        self._loopback()
+        self._with_protocol()
+        resolved = {'prefix': PREFIX, 'model_group_realm': 'global', 'name': 'k'}
+        mapping = {'global-alias': 'global:deepseek-test'}
+        for mode in ('deeplink', 'direct'):
+            with self.subTest(mode=mode):
+                with mock.patch('server.keysvc.resolve', return_value=resolved), \
+                     mock.patch('server.routers.keys.db.get_setting', return_value=mapping), \
+                     mock.patch.object(keyimport, 'open_url', return_value=True) as opened, \
+                     mock.patch('server.security.audit'):
+                    resp = self._client().post(
+                        '/api/keys/import-local',
+                        json=self._payload(app='codex', mode=mode, models=['global-alias']))
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertEqual(resp.json()['realm'], 'global')
+                self.assertEqual(resp.json()['method'], mode)
+                if mode == 'deeplink':
+                    q = urllib.parse.parse_qs(urllib.parse.urlsplit(opened.call_args.args[0]).query)
+                    self.assertEqual(q['model'], ['global-alias'])
+                    toml = base64.b64decode(q['config'][0]).decode('utf-8')
+                else:
+                    opened.assert_not_called()
+                    row = self.cc_row(keyimport.ccswitch_provider_id(PREFIX, 'codex'), 'codex')
+                    self.assertIsNotNone(row)
+                    toml = json.loads(row[1])['config']
+                self.assertIn('model = "global-alias"', toml)
+                self.assertNotIn('model = "global:global-alias"', toml)
+                self.assertIn('model_catalog_url = "http://h/v1/_models"', toml)
+                self.assertNotIn(TOKEN, resp.text)
+
     def test_direct_mode_forces_file_write(self):
         db = self.make_ccswitch()
         self._enable()
