@@ -154,7 +154,9 @@ async def upload_accounts(
                         try:
                             config.account_proxy({'proxy': account['proxy']})
                         except ValueError as exc:
-                            raise _InvalidUploadProxy(str(exc)) from exc
+                            raise _InvalidUploadProxy(
+                                '账号指定的代理线路不存在、已停用或配置无效；'
+                                '请先在面板配置并启用同名线路，再重新导入') from exc
                     filename, existed = tencent.write_auth_file(
                         account, auth_dir, allow_overwrite=overwrite)
                     if not existed:
@@ -167,9 +169,12 @@ async def upload_accounts(
                     rejected.append({'file': name, 'uid': exc.uid, 'message': '账号已存在，未覆盖'})
                 except _InvalidUploadProxy as exc:
                     logger.info('账号线路校验失败 file=%s reason=%s', name, str(exc))
-                    rejected.append({'file': name, 'message': '账号线路无效'})
-                except ValueError as exc:
+                    rejected.append({'file': name, 'message': str(exc)})
+                except accountimport.AccountImportError as exc:
                     logger.info('账号条目校验失败 file=%s reason=%s', name, str(exc))
+                    rejected.append({'file': name, 'message': str(exc)})
+                except ValueError as exc:
+                    logger.info('账号条目校验失败 file=%s reason=%s', name, type(exc).__name__)
                     rejected.append({'file': name, 'message': '账号条目无效'})
                 except Exception:
                     logger.exception('账号条目导入失败 file=%s', name)
@@ -177,6 +182,9 @@ async def upload_accounts(
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             logger.info('账号文件格式校验失败 file=%s reason=%s', name, type(exc).__name__)
             failed.append({'file': name, 'message': '文件格式无效'})
+        except accountimport.AccountImportError as exc:
+            logger.info('账号文件校验失败 file=%s reason=%s', name, str(exc))
+            failed.append({'file': name, 'message': str(exc)})
         except ValueError as exc:
             if str(exc) == '文件不能超过 2 MB':
                 failed.append({'file': name, 'message': '文件不能超过 2 MB'})
