@@ -2304,7 +2304,7 @@
   },
   "accountAccess": {
     "title": "Key access",
-    "accountHint": "Restrict which keys may call this account, independently of each key’s account scope. No selected keys means public. Dedicated accounts must also be selected in the key’s account scope.",
+    "accountHint": "Choose which keys may call this account. Saving adds this account to each selected key’s account scope and preserves its existing bindings. No other accounts are added automatically; manage them in the key settings.",
     "keyScope": "Accounts available to this key",
     "keyScopeHint": "An empty selection uses only public accounts. A selection limits rotation to those accounts and also respects account-side key permissions. There is no fallback outside this scope.",
     "publicPool": "Public pool only",

@@ -1,8 +1,8 @@
 """Independent key-side account scopes and account-side key permissions.
 
-An empty key scope uses the public pool. Dedicated accounts must be selected on
-both sides; disabling/revoking a key never silently releases its reservations.
-Policies are keyed by canonical directory + realm + UID, not mutable filenames.
+An empty key scope uses the public pool. Saving account permissions also selects
+that account in the chosen keys; disabling/revoking a key never silently releases
+its reservations. Policies use canonical directory + realm + UID, not mutable filenames.
 """
 from __future__ import annotations
 
@@ -108,23 +108,46 @@ def annotate(accounts: list[dict], group: dict) -> None:
 
 def set_policy(group: dict, aid: str, ids: list[int]) -> None:
     ids = list(dict.fromkeys(ids))
-    available = {k['id']: k for k in keysvc.list_keys()}
-    for kid in ids:
-        if kid not in available:
-            raise HTTPException(400, f'Key #{kid} 不存在')
-        try:
-            same = same_pool(key_group(available[kid]), group)
-        except upstreamsvc.UpstreamUnavailable:
-            same = False
-        if not same:
-            raise HTTPException(400, f'Key #{kid} 不属于该账号池')
-    if ids:
-        db.execute('INSERT INTO account_key_access(auth_dir, account_id, key_ids) VALUES(?,?,?) '
-                   'ON CONFLICT(auth_dir, account_id) DO UPDATE SET key_ids=excluded.key_ids',
-                   (directory(group), aid, json.dumps(ids)))
-    else:
-        db.execute('DELETE FROM account_key_access WHERE auth_dir=? AND account_id=?',
-                   (directory(group), aid))
+    # Hold the shared-connection lock and the SQLite writer reservation while
+    # reading scopes, so a concurrent Key edit cannot be lost between reads and writes.
+    with db._lock:
+        conn = db.connect()
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if not ids:
+                # Clearing account-side access does not undo manual Key scopes.
+                conn.execute('DELETE FROM account_key_access WHERE auth_dir=? AND account_id=?',
+                             (directory(group), aid))
+                return
+            placeholders = ','.join('?' for _ in ids)
+            available = {row['id']: row for row in conn.execute(
+                f'SELECT id, upstream_id, account_ids FROM api_keys WHERE id IN ({placeholders})', ids)}
+            bindings = []
+            for kid in ids:
+                if kid not in available:
+                    raise HTTPException(400, f'Key #{kid} 不存在')
+                row = available[kid]
+                try:
+                    key = {'upstream_id': keysvc._norm_upstream_id(row['upstream_id'])}
+                    same = same_pool(key_group(key), group)
+                except upstreamsvc.UpstreamUnavailable:
+                    same = False
+                if not same:
+                    raise HTTPException(400, f'Key #{kid} 不属于该账号池')
+                current = keysvc._account_ids(row['account_ids'])
+                if 'invalid-account-scope' in current:
+                    raise HTTPException(400, f'Key #{kid} 的账号范围无效；请先在 Key 设置中修复')
+                selected = list(dict.fromkeys([*current, aid]))
+                if len(selected) > 500:
+                    raise HTTPException(400, f'Key #{kid} 的绑定账号不能超过 500 个；请先在 Key 设置中整理')
+                if selected != current:
+                    bindings.append((json.dumps(selected), kid))
+            # Validate every chosen Key before writing either side. Only append
+            # this account: preserve other selections and the existing binding mode.
+            conn.executemany('UPDATE api_keys SET account_ids=? WHERE id=?', bindings)
+            conn.execute('INSERT INTO account_key_access(auth_dir, account_id, key_ids) VALUES(?,?,?) '
+                         'ON CONFLICT(auth_dir, account_id) DO UPDATE SET key_ids=excluded.key_ids',
+                         (directory(group), aid, json.dumps(ids)))
 
 
 def scope_from_rules(key: dict | None, access: dict[str, list[int]],

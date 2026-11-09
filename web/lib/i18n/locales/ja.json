@@ -2277,7 +2277,7 @@
   },
   "accountAccess": {
     "title": "Key access",
-    "accountHint": "Restrict which keys may call this account, independently of each key’s account scope. No selected keys means public. Dedicated accounts must also be selected in the key’s account scope.",
+    "accountHint": "このアカウントを利用できる Key を設定します。保存すると、選択した各 Key のアカウント範囲にこのアカウントが自動で追加され、既存の紐付けは維持されます。他のアカウントは自動選択されません。Key 設定で必要に応じて追加・削除してください。",
     "keyScope": "Accounts available to this key",
     "keyScopeHint": "An empty selection uses only public accounts. A selection limits rotation to those accounts and also respects account-side key permissions. There is no fallback outside this scope.",
     "publicPool": "Public pool only",
