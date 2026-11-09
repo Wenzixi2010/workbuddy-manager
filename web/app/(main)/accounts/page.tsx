@@ -34,7 +34,7 @@ import {
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {notify} from '@/lib/toast';
-import {accountApi, upstreamApi, upstreamsApi, errText} from '@/lib/api';
+import {accountApi, keyApi, upstreamApi, upstreamsApi, errText} from '@/lib/api';
 import type {
   Account,
   CreditExpiry,
@@ -82,6 +82,7 @@ import {AccountWeightDialog} from '@/components/common/accounts/AccountWeightDia
 import {MoveAccountDialog} from '@/components/common/accounts/MoveAccountDialog';
 import {UpstreamFormDialog} from '@/components/common/upstreams/UpstreamFormDialog';
 import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingDialog';
+import {AccountNameDetails} from '@/components/common/accounts/AccountNameDetails';
 import {AccountModelLimitsPopover} from '@/components/common/accounts/AccountModelLimitsPopover';
 import {AccountTaskDialog} from '@/components/common/accounts/AccountTaskDialog';
 import {ReloginQueueDialog} from '@/components/common/accounts/ReloginQueue';
@@ -222,6 +223,15 @@ export default function AccountsPage() {
    */
   const groupList = useAsyncAll({groups: () => upstreamsApi.list()}, []);
 
+  // 独占归属以账号返回的 reserved_by_key_ids 为准，只从安全的 Key 列表补充名称。
+  // 名称加载失败也不阻塞账号列表，浮层仍可显示拥有者的 Key ID。
+  const keyList = useAsyncAll({keys: () => keyApi.list()}, []);
+  const keyNamesUnavailable = 'keys' in keyList.errors;
+  const keyNames = useMemo(
+    () => new Map((keyNamesUnavailable ? [] : keyList.values.keys ?? []).map((key) => [key.id, key.name])),
+    [keyList.values.keys, keyNamesUnavailable],
+  );
+
   /** 账号池；`undefined` = 还没取到（首屏加载中，或它自己失败了） */
   const accounts: Account[] | undefined = values.pool?.accounts;
   const upstream: UpstreamStatus | null = poolStatus.values.upstream ?? null;
@@ -240,15 +250,18 @@ export default function AccountsPage() {
   const groupsFailed = 'groups' in groupList.errors;
 
   /**
-   * 刷新：三份数据各刷各的。
+   * 刷新：账号、上游、分组及独占 Key 名称各刷各的。
    *
    * 返回值合并成「是否全部成功」——本页有若干「先写再刷新」的动作（签到、删账号、
    * 移分组…），它们要能区分「写失败」与「写成功但列表没刷上」，后者绝不能报成前者。
    */
   const reloadAll = useCallback(async () => {
-    const [a, b, c] = await Promise.all([reload(), poolStatus.reload(), groupList.reload()]);
+    const [a, b, c] = await Promise.all([
+      reload(), poolStatus.reload(), groupList.reload(), keyList.reload(),
+    ]);
+    // Key 名称属于辅助信息，失败时回退 ID，不改变原有写入/刷新结果的判据。
     return a && b && c;
-  }, [reload, poolStatus.reload, groupList.reload]);
+  }, [reload, poolStatus.reload, groupList.reload, keyList.reload]);
 
   // 打开页面时自动拉一次实时积分：上游 /status 的 credits 可能滞后数小时，
   // 首次进入应展示真实余额。服务端有 TTL 缓存，重复进入不会频繁请求。
@@ -290,10 +303,10 @@ export default function AccountsPage() {
   // 30 秒闪一次。分组清单不随心跳刷新（它变的是「有哪些分组」，不是运行时状态）。
   //
   // 心跳同时刷**上游状态**（poolStatus）：只刷账号池的话，页头那组「可用 / 冷却」
-  // 会停在进页面那一刻；账号行内的冷却来自 pool 的合并结果，本来就会刷。
+  // 会停在进页面那一刻；独占 Key 名称也同步刷新，避免绑定/改名后浮层一直显示旧值。
   const heartbeatReload = useCallback(
-    () => { void reload(); void poolStatus.reload(); },
-    [reload, poolStatus.reload]);
+    () => { void reload(); void poolStatus.reload(); void keyList.reload(); },
+    [reload, poolStatus.reload, keyList.reload]);
   useHeartbeat(heartbeatReload, 30000);
 
   /** 刷新所有账号的实时积分（直接向腾讯查询，非上游缓存值） */
@@ -1517,9 +1530,9 @@ export default function AccountsPage() {
           {paged.rows.map((a) => (
             <div key={a.file} className="space-y-2.5 px-3.5 py-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2.5">
+                <div className="flex min-w-0 flex-1 items-center gap-2.5">
                   {renderAvatar(a)}
-                  <div className="min-w-0">
+                  <AccountNameDetails account={a} keyNames={keyNames}>
                     <div
                       className={
                         'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')
@@ -1533,7 +1546,7 @@ export default function AccountsPage() {
                         {t('accounts.noteLabel')}{a.note}
                       </div>
                     ) : null}
-                  </div>
+                  </AccountNameDetails>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
                   {renderStatus(a)}
@@ -1595,9 +1608,9 @@ export default function AccountsPage() {
             {paged.rows.map((a) => (
               <TableRow key={a.file} className="border-b border-border/40">
                 <TableCell className="pl-4">
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex min-w-0 items-center gap-2.5">
                     {renderAvatar(a)}
-                    <div className="min-w-0">
+                    <AccountNameDetails account={a} keyNames={keyNames}>
                       <div className={'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')}>
                         {a.nickname || t('accounts.unnamed')}
                       </div>
@@ -1606,7 +1619,7 @@ export default function AccountsPage() {
                           {t('accounts.noteLabel')}{a.note}
                         </div>
                       ) : null}
-                    </div>
+                    </AccountNameDetails>
                     {/* 版本徽章不再逐行重复：账号表本来就按当前版本过滤，每行都是
                         同一版本，右上角的切换按钮已经说明了这件事（issue #313）。 */}
                   </div>
